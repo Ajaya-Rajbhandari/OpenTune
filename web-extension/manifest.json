@@ -1,0 +1,32 @@
+{
+  "manifest_version": 3,
+  "name": "OpenTune Login Helper",
+  "version": "0.1.0",
+  "description": "Connects a YouTube Music browser login to the local OpenTune web app.",
+  "permissions": ["cookies", "scripting", "tabs"],
+  "host_permissions": [
+    "https://accounts.google.com/*",
+    "https://music.youtube.com/*",
+    "https://www.youtube.com/*",
+    "https://youtube.com/*",
+    "http://localhost:8080/*",
+    "http://127.0.0.1:8080/*",
+    "http://localhost:5173/*",
+    "http://127.0.0.1:5173/*"
+  ],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "content_scripts": [
+    {
+      "matches": [
+        "http://localhost:8080/*",
+        "http://127.0.0.1:8080/*",
+        "http://localhost:5173/*",
+        "http://127.0.0.1:5173/*"
+      ],
+      "js": ["opentune-page.js"],
+      "run_at": "document_start"
+    }
+  ]
+}

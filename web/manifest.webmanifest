@@ -1,0 +1,17 @@
+{
+  "name": "OpenTune Web",
+  "short_name": "OpenTune",
+  "description": "A web client prototype for OpenTune.",
+  "start_url": "./index.html",
+  "display": "standalone",
+  "background_color": "#121111",
+  "theme_color": "#121111",
+  "icons": [
+    {
+      "src": "./assets/icon.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any maskable"
+    }
+  ]
+}

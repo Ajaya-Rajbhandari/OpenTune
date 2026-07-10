@@ -170,6 +170,7 @@ import kotlinx.coroutines.withContext
 import com.arturo254.opentune.constants.AppBarHeight
 import com.arturo254.opentune.constants.AppLanguageKey
 import com.arturo254.opentune.constants.CustomThemeColorKey
+import com.arturo254.opentune.constants.DEFAULT_APP_LANGUAGE
 import com.arturo254.opentune.constants.DarkModeKey
 import com.arturo254.opentune.constants.DefaultOpenTabKey
 import com.arturo254.opentune.constants.DisableScreenshotKey
@@ -348,6 +349,30 @@ class MainActivity : ComponentActivity() {
         }
     }
 
+    private fun resolveAppLocale(languageTag: String?): Locale {
+        return when (languageTag) {
+            null -> Locale.forLanguageTag(DEFAULT_APP_LANGUAGE)
+            SYSTEM_DEFAULT -> Locale.getDefault()
+            else -> Locale.forLanguageTag(languageTag)
+        }
+    }
+
+    @RequiresApi(Build.VERSION_CODES.TIRAMISU)
+    private fun setDefaultFrameworkLocaleIfMissing() {
+        val localeManager = getSystemService(android.app.LocaleManager::class.java)
+        val hasNoStoredPreference = PreferenceStore.get(AppLanguageKey) == null
+        val hasNoFrameworkLocale = localeManager.applicationLocales.size() == 0
+        if (hasNoStoredPreference && hasNoFrameworkLocale) {
+            localeManager.applicationLocales =
+                android.os.LocaleList.forLanguageTags(DEFAULT_APP_LANGUAGE)
+            lifecycleScope.launch(Dispatchers.IO) {
+                dataStore.edit { settings ->
+                    settings[AppLanguageKey] = DEFAULT_APP_LANGUAGE
+                }
+            }
+        }
+    }
+
 
     override fun onStart() {
         super.onStart()
@@ -425,21 +450,17 @@ class MainActivity : ComponentActivity() {
         window.decorView.layoutDirection = View.LAYOUT_DIRECTION_LTR
         WindowCompat.setDecorFitsSystemWindows(window, false)
 
-        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU) {
-            val initialLocale = PreferenceStore.get(AppLanguageKey)
-                ?.takeUnless { it == SYSTEM_DEFAULT }
-                ?.let { Locale.forLanguageTag(it) }
-                ?: Locale.getDefault()
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            setDefaultFrameworkLocaleIfMissing()
+        } else {
+            val initialLocale = resolveAppLocale(PreferenceStore.get(AppLanguageKey))
             setAppLocale(this, initialLocale)
 
             lifecycleScope.launch(Dispatchers.IO) {
                 runCatching {
                     dataStore.data.first()[AppLanguageKey]
                 }.onSuccess { lang ->
-                    val targetLocale = lang
-                        ?.takeUnless { it == SYSTEM_DEFAULT }
-                        ?.let { Locale.forLanguageTag(it) }
-                        ?: Locale.getDefault()
+                    val targetLocale = resolveAppLocale(lang)
                     if (targetLocale != initialLocale) {
                         withContext(Dispatchers.Main) {
                             setAppLocale(this@MainActivity, targetLocale)

@@ -69,6 +69,9 @@ enum class SliderStyle {
 }
 
 const val SYSTEM_DEFAULT = "SYSTEM_DEFAULT"
+const val DEFAULT_APP_LANGUAGE = "en"
+const val DEFAULT_CONTENT_LANGUAGE = "en"
+const val DEFAULT_CONTENT_COUNTRY = "US"
 val AppLanguageKey = stringPreferencesKey("appLanguage")
 val ContentLanguageKey = stringPreferencesKey("contentLanguage")
 val ContentCountryKey = stringPreferencesKey("contentCountry")

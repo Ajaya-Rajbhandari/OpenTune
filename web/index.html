@@ -1,0 +1,317 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+    <meta name="theme-color" content="#101116" />
+    <title>OpenTune Web</title>
+    <link rel="manifest" href="./manifest.webmanifest" />
+    <link rel="icon" href="./assets/icon.png" />
+    <link rel="apple-touch-icon" href="./assets/icon.png" />
+    <link rel="stylesheet" href="./styles.css" />
+  </head>
+  <body>
+    <div class="device-frame" data-player-open="false">
+      <div class="mesh-background" aria-hidden="true"></div>
+
+      <aside class="web-sidebar" aria-label="OpenTune navigation">
+        <div class="sidebar-brand">
+          <img src="./assets/icon.png" alt="" />
+          <strong>OpenTune</strong>
+        </div>
+
+        <nav class="sidebar-nav" aria-label="Primary">
+          <button class="sidebar-link active" type="button" data-route="home">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 10.8 12 3l9 7.8V21h-6v-6H9v6H3z" /></svg>
+            <span>Home</span>
+          </button>
+          <button class="sidebar-link" type="button" data-route="search">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m20.2 21.5-6.1-6.1a7.4 7.4 0 1 1 1.4-1.4l6.1 6.1zM9.8 15a5.2 5.2 0 1 0 0-10.4 5.2 5.2 0 0 0 0 10.4z" /></svg>
+            <span>Search</span>
+          </button>
+          <button class="sidebar-link" type="button" data-route="explore">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 2a10 10 0 1 0 0 20 10 10 0 0 0 0-20zm4 6-2.4 5.6L8 16l2.4-5.6z" /></svg>
+            <span>Explore</span>
+          </button>
+          <button class="sidebar-link" type="button" data-route="library">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 5h3v14H4zm5 0h3v14H9zm6.2 1.1 3-.8 3.6 13.5-3 .8z" /></svg>
+            <span>Library</span>
+          </button>
+        </nav>
+
+        <section class="sidebar-section">
+          <div class="sidebar-section-title">
+            <span>Your Library</span>
+            <button class="icon-button" type="button" aria-label="Create playlist">
+              <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M11 5h2v6h6v2h-6v6h-2v-6H5v-2h6z" /></svg>
+            </button>
+          </div>
+          <div class="library-stack">
+            <button class="library-shortcut" type="button" data-route="library">
+              <span class="shortcut-art liked"></span>
+              <span><strong>Liked songs</strong><small>Playlist</small></span>
+            </button>
+            <button class="library-shortcut" type="button" data-route="library">
+              <span class="shortcut-art downloaded"></span>
+              <span><strong>Downloads</strong><small>Available offline</small></span>
+            </button>
+            <button class="library-shortcut" type="button" data-route="home">
+              <span class="shortcut-art mixes"></span>
+              <span><strong>Quick picks</strong><small>OpenTune radio</small></span>
+            </button>
+          </div>
+        </section>
+      </aside>
+
+      <main class="app-screen" id="appScreen">
+        <header class="web-topbar">
+          <div class="history-controls" aria-hidden="true">
+            <button class="icon-button" type="button" tabindex="-1">
+              <svg viewBox="0 0 24 24"><path d="m15.4 5.4 1.4 1.4L11.6 12l5.2 5.2-1.4 1.4L8.8 12z" /></svg>
+            </button>
+            <button class="icon-button" type="button" tabindex="-1">
+              <svg viewBox="0 0 24 24"><path d="m8.6 18.6-1.4-1.4 5.2-5.2-5.2-5.2 1.4-1.4 6.6 6.6z" /></svg>
+            </button>
+          </div>
+          <label class="search-field web-search-field">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m20.2 21.5-6.1-6.1a7.4 7.4 0 1 1 1.4-1.4l6.1 6.1zM9.8 15a5.2 5.2 0 1 0 0-10.4 5.2 5.2 0 0 0 0 10.4z" /></svg>
+            <input id="searchInput" type="search" autocomplete="off" placeholder="What do you want to play?" />
+          </label>
+          <button class="account-chip" type="button" aria-label="Account">
+            <img src="./assets/icon.png" alt="" />
+            <span>Work</span>
+          </button>
+        </header>
+
+        <section class="screen-view active" id="homeView" data-view="home" aria-labelledby="homeTitle">
+          <section class="web-hero">
+            <div>
+              <p class="overline">OpenTune web</p>
+              <h1 id="homeTitle">Good evening</h1>
+              <p class="hero-copy">Continue your queue, jump back into saved music, or start a radio from quick picks.</p>
+            </div>
+            <button class="hero-now-card" type="button" id="heroNowCard" aria-label="Open player">
+              <span class="hero-art" id="heroArt"></span>
+              <span>
+                <small>Playing now</small>
+                <strong id="heroTitle">Signal Bloom</strong>
+                <em id="heroArtist">Tala North</em>
+              </span>
+            </button>
+          </section>
+
+          <div class="chips-row" id="homeChips" aria-label="Home filters"></div>
+
+          <section class="web-section">
+            <div class="section-title">
+              <h2>Quick picks</h2>
+            </div>
+            <div class="quick-picks-list" id="quickPicks"></div>
+          </section>
+
+          <section class="web-section">
+            <div class="section-title">
+              <h2>Speed dial</h2>
+              <button class="text-button" type="button">Edit</button>
+            </div>
+            <div class="speed-grid" id="speedDial"></div>
+          </section>
+
+          <section class="web-section">
+            <div class="section-title">
+              <h2>Keep listening</h2>
+            </div>
+            <div class="horizontal-list" id="keepListening"></div>
+          </section>
+        </section>
+
+        <section class="screen-view" id="searchView" data-view="search" aria-labelledby="searchTitle">
+          <header class="page-heading">
+            <p class="overline">Online</p>
+            <h1 id="searchTitle">Search</h1>
+          </header>
+          <div class="suggestions" id="suggestions"></div>
+          <div class="list-group" id="searchResults"></div>
+        </section>
+
+        <section class="screen-view" id="moodsView" data-view="explore" aria-labelledby="moodsTitle">
+          <header class="page-heading">
+            <p class="overline">Browse</p>
+            <h1 id="moodsTitle">Explore</h1>
+          </header>
+          <div class="mood-grid" id="moodGrid"></div>
+        </section>
+
+        <section class="screen-view" id="libraryView" data-view="library" aria-labelledby="libraryTitle">
+          <header class="page-heading">
+            <p class="overline">Local</p>
+            <h1 id="libraryTitle">Library</h1>
+          </header>
+          <div class="chips-row" id="libraryChips" aria-label="Library filters"></div>
+          <div class="library-summary">
+            <button class="library-card" type="button" data-library="liked">
+              <span class="summary-icon favorite"></span>
+              <strong>Liked songs</strong>
+              <small id="likedCount">0 songs</small>
+            </button>
+            <button class="library-card" type="button" data-library="downloaded">
+              <span class="summary-icon download"></span>
+              <strong>Downloads</strong>
+              <small>Available offline</small>
+            </button>
+          </div>
+          <div class="list-group" id="libraryResults"></div>
+        </section>
+      </main>
+
+      <aside class="web-now-panel" aria-label="Now playing">
+        <header class="panel-header">
+          <h2>Now playing</h2>
+          <button class="icon-button" type="button" aria-label="Open player" id="sideOpenPlayer">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m7.4 8.6 4.6 4.6 4.6-4.6L18 10l-6 6-6-6z" /></svg>
+          </button>
+        </header>
+        <div class="side-art" id="sideArt"></div>
+        <div class="side-title-block">
+          <div>
+            <h3 id="sideTitle">Signal Bloom</h3>
+            <p id="sideArtist">Tala North</p>
+          </div>
+          <button class="tonal-button" id="sideFavoriteButton" type="button" aria-label="Like">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 21s-7-4.4-9.3-8.8C.8 8.4 3.1 5 6.8 5c2 0 3.4 1 4.2 2.1C11.8 6 13.2 5 15.2 5c3.7 0 6 3.4 4.1 7.2C19 16.6 12 21 12 21z" /></svg>
+          </button>
+        </div>
+        <section class="side-queue-section">
+          <h3>Up next</h3>
+          <div class="side-queue" id="sideQueue"></div>
+        </section>
+      </aside>
+
+      <aside class="player-sheet" id="playerSheet" aria-label="Expanded player" aria-hidden="true">
+        <div class="sheet-handle" data-close-player></div>
+        <header class="player-top">
+          <button class="icon-button" type="button" aria-label="Collapse player" data-close-player>
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m7.4 8.6 4.6 4.6 4.6-4.6L18 10l-6 6-6-6z" /></svg>
+          </button>
+          <strong>Now playing</strong>
+          <button class="icon-button" type="button" aria-label="Player menu">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 8a2 2 0 1 0 0-4 2 2 0 0 0 0 4zm0 2a2 2 0 1 0 0 4 2 2 0 0 0 0-4zm0 6a2 2 0 1 0 0 4 2 2 0 0 0 0-4z" /></svg>
+          </button>
+        </header>
+        <div class="player-art-wrap">
+          <div class="player-art" id="playerArt"></div>
+        </div>
+        <section class="player-title-block">
+          <div>
+            <h2 id="sheetTitle">Signal Bloom</h2>
+            <p id="sheetArtist">Tala North</p>
+          </div>
+          <div class="sheet-actions">
+            <button class="tonal-button" type="button" aria-label="Share">
+              <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M18 16.1c-.8 0-1.5.3-2 .9L8.9 13c.1-.3.1-.6.1-1s0-.7-.1-1L16 7a3 3 0 1 0-1-1.7L7.9 9.4a3 3 0 1 0 0 5.2l7 4.1A3 3 0 1 0 18 16.1z" /></svg>
+            </button>
+            <button class="tonal-button" id="sheetFavoriteButton" type="button" aria-label="Like">
+              <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 21s-7-4.4-9.3-8.8C.8 8.4 3.1 5 6.8 5c2 0 3.4 1 4.2 2.1C11.8 6 13.2 5 15.2 5c3.7 0 6 3.4 4.1 7.2C19 16.6 12 21 12 21z" /></svg>
+            </button>
+          </div>
+        </section>
+        <div class="progress-block">
+          <input id="sheetProgress" type="range" min="0" max="1000" value="0" aria-label="Player progress" />
+          <div>
+            <span id="sheetCurrentTime">0:00</span>
+            <span id="sheetDuration">0:00</span>
+          </div>
+        </div>
+        <div class="sheet-controls">
+          <button class="icon-button" id="sheetShuffleButton" type="button" aria-label="Shuffle">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M16 4h5v5h-2V7.7l-3.5 3.5-1.4-1.4L17.6 6H16zM4 7h4.3l9.3 9.3H21v2h-4.3L7.4 9H4zm10.1 7.9 1.4 1.4L19 12.8V11h2v5h-5v-2h1.6zM4 17h4.3l2.2-2.2 1.4 1.4L9.1 19H4z" /></svg>
+          </button>
+          <button class="large-control" id="sheetPrevButton" type="button" aria-label="Previous">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 5h2v14H6zm3 7 9-7v14z" /></svg>
+          </button>
+          <button class="main-control" id="sheetPlayButton" type="button" aria-label="Play">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M8 5v14l11-7z" /></svg>
+          </button>
+          <button class="large-control" id="sheetNextButton" type="button" aria-label="Next">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M16 5h2v14h-2zM6 5l9 7-9 7z" /></svg>
+          </button>
+          <button class="icon-button" id="sheetRepeatButton" type="button" aria-label="Repeat">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M7 7h9v3l4-4-4-4v3H7a5 5 0 0 0-5 5v1h2v-1a3 3 0 0 1 3-3zm10 10H8v-3l-4 4 4 4v-3h9a5 5 0 0 0 5-5v-1h-2v1a3 3 0 0 1-3 3z" /></svg>
+          </button>
+        </div>
+        <div class="sheet-tabs" role="tablist" aria-label="Player pages">
+          <button class="active" type="button" data-player-page="lyrics">Lyrics</button>
+          <button type="button" data-player-page="queue">Queue</button>
+        </div>
+        <div class="sheet-page active" id="lyricsPage"></div>
+        <div class="sheet-page" id="queuePage"></div>
+      </aside>
+
+      <footer class="bottom-area">
+        <div class="mini-player" id="miniPlayer" role="button" tabindex="0" aria-label="Open player">
+          <div class="mini-disc" id="miniDisc"></div>
+          <div class="mini-info">
+            <strong id="miniTitle">Signal Bloom</strong>
+            <span id="miniArtist">Tala North</span>
+          </div>
+        </div>
+
+        <div class="web-player-center">
+          <div class="bar-controls">
+            <button class="bar-icon" id="barShuffleButton" type="button" aria-label="Shuffle">
+              <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M16 4h5v5h-2V7.7l-3.5 3.5-1.4-1.4L17.6 6H16zM4 7h4.3l9.3 9.3H21v2h-4.3L7.4 9H4zm10.1 7.9 1.4 1.4L19 12.8V11h2v5h-5v-2h1.6zM4 17h4.3l2.2-2.2 1.4 1.4L9.1 19H4z" /></svg>
+            </button>
+            <button class="bar-icon" id="barPrevButton" type="button" aria-label="Previous">
+              <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 5h2v14H6zm3 7 9-7v14z" /></svg>
+            </button>
+            <button class="bar-main" id="miniPlayButton" type="button" aria-label="Play">
+              <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M8 5v14l11-7z" /></svg>
+            </button>
+            <button class="bar-icon" id="miniNextButton" type="button" aria-label="Next">
+              <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M16 5h2v14h-2zM6 5l9 7-9 7z" /></svg>
+            </button>
+            <button class="bar-icon" id="barRepeatButton" type="button" aria-label="Repeat">
+              <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M7 7h9v3l4-4-4-4v3H7a5 5 0 0 0-5 5v1h2v-1a3 3 0 0 1 3-3zm10 10H8v-3l-4 4 4 4v-3h9a5 5 0 0 0 5-5v-1h-2v1a3 3 0 0 1-3 3z" /></svg>
+            </button>
+          </div>
+          <div class="bar-progress">
+            <span id="barCurrentTime">0:00</span>
+            <input id="barProgress" type="range" min="0" max="1000" value="0" aria-label="Player progress" />
+            <span id="barDuration">0:00</span>
+          </div>
+        </div>
+
+        <div class="web-player-actions" aria-label="Player tools">
+          <button class="bar-icon" type="button" aria-label="Queue" data-route="library">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 6h12v2H4zm0 5h12v2H4zm0 5h8v2H4zm14-1 4 3-4 3z" /></svg>
+          </button>
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 9v6h4l5 4V5L8 9zm11 1.2v3.6l3 1.8V8.4z" /></svg>
+          <div class="volume-track"><span></span></div>
+        </div>
+      </footer>
+
+      <nav class="floating-toolbar" aria-label="Primary mobile">
+        <button class="toolbar-item active" type="button" data-route="home">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 10.8 12 3l9 7.8V21h-6v-6H9v6H3z" /></svg>
+          <span>Home</span>
+        </button>
+        <button class="toolbar-item" type="button" data-route="search">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m20.2 21.5-6.1-6.1a7.4 7.4 0 1 1 1.4-1.4l6.1 6.1zM9.8 15a5.2 5.2 0 1 0 0-10.4 5.2 5.2 0 0 0 0 10.4z" /></svg>
+          <span>Search</span>
+        </button>
+        <button class="toolbar-item" type="button" data-route="explore">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 2a10 10 0 1 0 0 20 10 10 0 0 0 0-20zm4 6-2.4 5.6L8 16l2.4-5.6z" /></svg>
+          <span>Explore</span>
+        </button>
+        <button class="toolbar-item" type="button" data-route="library">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 5h3v14H4zm5 0h3v14H9zm6.2 1.1 3-.8 3.6 13.5-3 .8z" /></svg>
+          <span>Library</span>
+        </button>
+      </nav>
+
+      <div class="toast-region" id="toastRegion" aria-live="polite"></div>
+    </div>
+
+    <script src="./app.js" defer></script>
+  </body>
+</html>

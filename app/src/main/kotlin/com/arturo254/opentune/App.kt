@@ -99,17 +99,10 @@ class App : Application(), SingletonImageLoader.Factory {
     private fun initializeCriticalSync() {
         CanvasArtworkPlaybackCache.init(this)
 
-        val locale = Locale.getDefault()
-        val languageTag = locale.toLanguageTag().replace("-Hant", "")
         YouTube.locale = YouTubeLocale(
-            gl = locale.country.takeIf { it in CountryCodeToName } ?: "US",
-            hl = locale.language.takeIf { it in LanguageCodeToName }
-                ?: languageTag.takeIf { it in LanguageCodeToName }
-                ?: "en"
+            gl = DEFAULT_CONTENT_COUNTRY,
+            hl = DEFAULT_CONTENT_LANGUAGE
         )
-        if (languageTag == "zh-TW") {
-            KuGou.useTraditionalChinese = true
-        }
         LastFM.initialize(
             apiKey = BuildConfig.LASTFM_API_KEY,
             secret = BuildConfig.LASTFM_SECRET
@@ -121,11 +114,27 @@ class App : Application(), SingletonImageLoader.Factory {
             try {
                 val prefs = dataStore.data.first()
                 
-                prefs[ContentCountryKey]?.takeIf { it != SYSTEM_DEFAULT }?.let { country ->
-                    YouTube.locale = YouTube.locale.copy(gl = country)
+                prefs[ContentCountryKey]?.let { country ->
+                    val resolvedCountry = if (country == SYSTEM_DEFAULT) {
+                        Locale.getDefault().country.takeIf { it in CountryCodeToName }
+                            ?: DEFAULT_CONTENT_COUNTRY
+                    } else {
+                        country
+                    }
+                    YouTube.locale = YouTube.locale.copy(gl = resolvedCountry)
                 }
-                prefs[ContentLanguageKey]?.takeIf { it != SYSTEM_DEFAULT }?.let { lang ->
-                    YouTube.locale = YouTube.locale.copy(hl = lang)
+                prefs[ContentLanguageKey]?.let { lang ->
+                    val systemLocale = Locale.getDefault()
+                    val systemLanguageTag = systemLocale.toLanguageTag().replace("-Hant", "")
+                    val resolvedLanguage = if (lang == SYSTEM_DEFAULT) {
+                        systemLocale.language.takeIf { it in LanguageCodeToName }
+                            ?: systemLanguageTag.takeIf { it in LanguageCodeToName }
+                            ?: DEFAULT_CONTENT_LANGUAGE
+                    } else {
+                        lang
+                    }
+                    YouTube.locale = YouTube.locale.copy(hl = resolvedLanguage)
+                    KuGou.useTraditionalChinese = resolvedLanguage == "zh-TW"
                 }
                 
                 LastFM.sessionKey = prefs[LastFMSessionKey]

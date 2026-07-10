@@ -44,7 +44,27 @@ import androidx.core.net.toUri
 private fun getLanguageDisplayName(languageCode: String): String {
     return when (languageCode) {
         SYSTEM_DEFAULT -> "System Default"
-        else -> LanguageCodeToName[languageCode] ?: languageCode
+        else -> LanguageCodeToName[languageCode]
+            ?: Locale.forLanguageTag(languageCode)
+                .getDisplayName(Locale.ENGLISH)
+                .ifBlank { languageCode }
+    }
+}
+
+private fun getCurrentAppLanguageCode(
+    context: android.content.Context,
+    storedLanguage: String,
+): String {
+    if (Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU) {
+        return storedLanguage
+    }
+
+    val localeManager = context.getSystemService(android.app.LocaleManager::class.java)
+    val locales = localeManager.applicationLocales
+    return if (locales.size() == 0) {
+        SYSTEM_DEFAULT
+    } else {
+        locales.get(0).toLanguageTag()
     }
 }
 
@@ -58,16 +78,16 @@ fun ContentSettings(
 
     val (appLanguage, onAppLanguageChange) = rememberPreference(
         key = AppLanguageKey,
-        defaultValue = SYSTEM_DEFAULT
+        defaultValue = DEFAULT_APP_LANGUAGE
     )
 
     val (contentLanguage, onContentLanguageChange) = rememberPreference(
         key = ContentLanguageKey,
-        defaultValue = "system"
+        defaultValue = DEFAULT_CONTENT_LANGUAGE
     )
     val (contentCountry, onContentCountryChange) = rememberPreference(
         key = ContentCountryKey,
-        defaultValue = "system"
+        defaultValue = DEFAULT_CONTENT_COUNTRY
     )
     val (hideExplicit, onHideExplicitChange) = rememberPreference(
         key = HideExplicitKey,
@@ -147,6 +167,7 @@ fun ContentSettings(
             LanguageOption(code = code, displayName = name)
         }
     }
+    val currentAppLanguage = getCurrentAppLanguageCode(context, appLanguage)
 
     var showProviderOrderDialog by remember { mutableStateOf(false) }
 
@@ -178,7 +199,7 @@ fun ContentSettings(
                     hl = newValue.takeIf { it != SYSTEM_DEFAULT }
                         ?: locale.language.takeIf { it in LanguageCodeToName }
                         ?: languageTag.takeIf { it in LanguageCodeToName }
-                        ?: "en"
+                        ?: DEFAULT_CONTENT_LANGUAGE
                 )
 
                 onContentLanguageChange(newValue)
@@ -199,7 +220,7 @@ fun ContentSettings(
                 YouTube.locale = YouTube.locale.copy(
                     gl = newValue.takeIf { it != SYSTEM_DEFAULT }
                         ?: locale.country.takeIf { it in CountryCodeToName }
-                        ?: "US"
+                        ?: DEFAULT_CONTENT_COUNTRY
                 )
 
                 onContentCountryChange(newValue)
@@ -226,7 +247,7 @@ fun ContentSettings(
                 title = { Text(stringResource(R.string.app_language)) },
                 subtitle = {
                     Text(
-                        text = getLanguageDisplayName(appLanguage)
+                        text = getLanguageDisplayName(currentAppLanguage)
                     )
                 },
                 icon = { Icon(painterResource(R.drawable.translate), null) },
@@ -244,7 +265,7 @@ fun ContentSettings(
                 title = { Text(stringResource(R.string.app_language)) },
                 subtitle = {
                     Text(
-                        text = getLanguageDisplayName(appLanguage)
+                        text = getLanguageDisplayName(currentAppLanguage)
                     )
                 },
                 icon = { Icon(painterResource(R.drawable.language), null) },
