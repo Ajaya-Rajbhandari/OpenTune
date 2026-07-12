@@ -60,7 +60,7 @@ const state: AppState = {
   queue: [],
   history: [],
   queueSource: [],
-  autoplayRadio: true,
+  autoplayRadio: false,
   favorites: new Set(),
   downloaded: new Set(),
   isPlaying: false,
@@ -1462,7 +1462,6 @@ function playLibrary(shuffle = false): void {
  */
 function startQueue(tracks: Track[], shuffle: boolean): void {
   if (shuffle) state.shuffle = true;
-  state.autoplayRadio = false;
 
   const ordered = state.shuffle ? shuffled(tracks) : tracks;
   state.queueSource = tracks.map((track) => track.id);
@@ -1651,6 +1650,14 @@ function renderPlayer(): void {
     button.classList.toggle("active", state.shuffle);
     button.setAttribute("aria-label", state.shuffle ? "Shuffle on" : "Shuffle off");
   });
+  qsa<HTMLButtonElement>("#barAutoplayButton").forEach((button) => {
+    button.classList.toggle("active", state.autoplayRadio);
+    button.setAttribute("aria-label", state.autoplayRadio ? "Autoplay on" : "Autoplay off");
+    button.title = state.autoplayRadio
+      ? "Autoplay on: keeps playing similar songs when the queue ends"
+      : "Autoplay off: stops at the end of the queue";
+  });
+
   qsa<HTMLButtonElement>("#barRepeatButton, #sheetRepeatButton, #nowPageRepeatButton, #lyricsRepeatButton").forEach((button) => {
     button.classList.toggle("active", state.repeatMode !== "off");
     button.dataset.mode = state.repeatMode;
@@ -2026,8 +2033,6 @@ function playFromCurrentView(trackId: string): void {
   const index = view.findIndex((track) => track.id === trackId);
 
   if (index === -1) {
-    // Not part of any list we can identify, so let autoplay carry on after it.
-    state.autoplayRadio = true;
     state.queueSource = [trackId];
     state.queue = [];
     state.history = [];
@@ -2035,7 +2040,6 @@ function playFromCurrentView(trackId: string): void {
     return;
   }
 
-  state.autoplayRadio = false;
   const rest = view.slice(index + 1).map((track) => track.id);
   state.queueSource = view.map((track) => track.id);
   state.queue = state.shuffle ? shuffled(rest) : rest;
@@ -2262,15 +2266,11 @@ async function loadQueueForTrack(trackId: string): Promise<void> {
   try {
     const next = await loadNextQueue(trackId, mergeTrack);
     if (state.next.requestId !== requestId || state.currentTrackId !== trackId) return;
+    // Only the Up Next heading. This used to overwrite the queue with YouTube's suggestions for the
+    // current track a moment after playback began, so a playlist quietly turned into a radio station
+    // and "next" walked out of it. Autoplay now extends the queue when it actually runs out, and
+    // only when it is switched on.
     state.next = { status: "ready", title: next.title, error: "", requestId };
-
-    // Autoplay only fills a queue that would otherwise run dry. A list the user chose *is* the
-    // queue: this used to overwrite it with YouTube's suggestions for the current track a moment
-    // after playback began, so a playlist quietly turned into a radio station and "next" left it.
-    if (state.autoplayRadio && !state.queue.length) {
-      state.queue = next.trackIds.filter((id) => id !== trackId).slice(0, 24);
-      state.queueSource = [trackId, ...state.queue];
-    }
   } catch (error) {
     if (state.next.requestId !== requestId) return;
     state.next = { ...state.next, status: "error", error: error instanceof Error ? error.message : "Unable to load Up Next" };
@@ -2342,9 +2342,48 @@ function nextTrack(): void {
     return;
   }
 
-  // The queue is done. Stop there. Falling back to "some other track we happen to have loaded" is
-  // what made a one-song playlist run on into an unrelated song, and it is never what was asked for.
+  // The queue is done. Continue into autoplay only if that was actually asked for, otherwise stop.
+  // Falling back to "some other track we happen to have loaded" is what made a one-song playlist run
+  // on into an unrelated song.
+  if (state.autoplayRadio && state.currentTrackId) {
+    void continueWithAutoplay();
+    return;
+  }
   endPlayback();
+}
+
+/**
+ * Carries on from the track that just finished, once the chosen queue has genuinely run out.
+ *
+ * The station it builds becomes the new context: the chosen list is over by this point, so shuffle
+ * and repeat should apply to what is actually playing now.
+ */
+async function continueWithAutoplay(): Promise<void> {
+  const seed = state.currentTrackId;
+  try {
+    const next = await loadNextQueue(seed, mergeTrack);
+    if (state.currentTrackId !== seed) return;
+
+    const radio = next.trackIds.filter((id) => id !== seed);
+    if (!radio.length) {
+      endPlayback();
+      return;
+    }
+
+    state.queueSource = [seed, ...radio];
+    state.queue = state.shuffle ? shuffled(radio) : radio.slice();
+    const first = state.queue.shift();
+    if (first) playTrack(first);
+  } catch {
+    endPlayback();
+  }
+}
+
+function toggleAutoplay(): void {
+  state.autoplayRadio = !state.autoplayRadio;
+  showToast(state.autoplayRadio ? "Autoplay on — keeps playing when the queue ends" : "Autoplay off — stops at the end of the queue");
+  render();
+  saveState();
 }
 
 /** Reached the end of the queue: hold on the last track rather than starting something else. */
@@ -2498,6 +2537,7 @@ function bindEvents(): void {
   ["#barPrevButton", "#sheetPrevButton", "#nowPagePrevButton", "#lyricsPrevButton"].forEach((selector) => qs(selector).addEventListener("click", previousTrack));
   ["#barShuffleButton", "#sheetShuffleButton", "#nowPageShuffleButton", "#lyricsShuffleButton"].forEach((selector) => qs(selector).addEventListener("click", toggleShuffle));
   ["#barRepeatButton", "#sheetRepeatButton", "#nowPageRepeatButton", "#lyricsRepeatButton"].forEach((selector) => qs(selector).addEventListener("click", cycleRepeatMode));
+  qs("#barAutoplayButton").addEventListener("click", toggleAutoplay);
   qs("#barQueueButton").addEventListener("click", openQueuePanel);
   ["#sheetFavoriteButton", "#sideFavoriteButton", "#nowPageFavoriteButton"].forEach((selector) => qs(selector).addEventListener("click", () => void toggleFavorite(state.currentTrackId)));
   ["#sideArtist", "#sheetArtist", "#nowPageArtist"].forEach((selector) => {
