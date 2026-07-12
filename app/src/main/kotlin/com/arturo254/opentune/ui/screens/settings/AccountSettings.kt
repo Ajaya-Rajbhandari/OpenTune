@@ -228,6 +228,21 @@ fun AccountSettings(
                         checked = ytmSync,
                         onCheckedChange = onYtmSyncChange
                     )
+
+                    HorizontalDivider(
+                        modifier = Modifier.padding(start = 56.dp),
+                        color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.3f)
+                    )
+
+                    SettingsClickableItem(
+                        icon = painterResource(R.drawable.sync),
+                        title = "Pair with OpenTune Web",
+                        subtitle = "Send this Android login to OpenTune Web",
+                        onClick = {
+                            onClose()
+                            navController.navigate(WEB_PAIRING_ROUTE)
+                        }
+                    )
                 }
             }
 

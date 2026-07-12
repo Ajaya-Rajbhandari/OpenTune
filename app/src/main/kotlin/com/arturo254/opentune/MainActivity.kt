@@ -244,6 +244,9 @@ import com.arturo254.opentune.ui.screens.musicrecognition.MusicRecognitionRoute
 import com.arturo254.opentune.ui.screens.navigationBuilder
 import com.arturo254.opentune.ui.screens.search.LocalSearchScreen
 import com.arturo254.opentune.ui.screens.search.OnlineSearchScreen
+import com.arturo254.opentune.ui.screens.settings.WEB_PAIRING_CODE_ARGUMENT
+import com.arturo254.opentune.ui.screens.settings.WEB_PAIRING_SERVER_ARGUMENT
+import com.arturo254.opentune.ui.screens.settings.buildWebPairingRoute
 import com.arturo254.opentune.ui.screens.settings.DarkMode
 import com.arturo254.opentune.ui.screens.settings.DiscordPresenceManager
 import com.arturo254.opentune.ui.screens.settings.NavigationTab
@@ -1969,6 +1972,16 @@ class MainActivity : ComponentActivity() {
 
         if (uri.scheme.equals("OpenTune", ignoreCase = true) && authority == "login") {
             navController.navigate(buildLoginRoute(uri.getQueryParameter(LOGIN_URL_ARGUMENT)))
+            return
+        }
+
+        if (uri.scheme.equals("OpenTune", ignoreCase = true) && authority == "web-pair") {
+            navController.navigate(
+                buildWebPairingRoute(
+                    server = uri.getQueryParameter(WEB_PAIRING_SERVER_ARGUMENT),
+                    code = uri.getQueryParameter(WEB_PAIRING_CODE_ARGUMENT),
+                )
+            )
             return
         }
 
