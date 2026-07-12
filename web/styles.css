@@ -1238,11 +1238,17 @@ h1 {
   transform: translateY(-4px) rotate(-1.5deg) scale(1.02);
 }
 
+.now-page-lyrics-overlay.fullscreen {
+  /* Shared by the poster and the caption beneath it, so the two cannot drift apart. */
+  --poster-left: clamp(100px, 24vw, 420px);
+  --poster-size: min(clamp(220px, 29vw, 420px), 48vh);
+}
+
 .now-page-lyrics-overlay.fullscreen .lyrics-poster {
-  left: clamp(100px, 24vw, 420px);
+  left: var(--poster-left);
   top: 50%;
   bottom: auto;
-  width: min(clamp(220px, 29vw, 420px), 48vh);
+  width: var(--poster-size);
   aspect-ratio: 1;
   padding: clamp(14px, 1.6vw, 24px);
   border-radius: 28px;
@@ -1252,23 +1258,32 @@ h1 {
   animation: lyrics-poster-settle 420ms cubic-bezier(0.2, 0, 0, 1);
 }
 
+.now-page-lyrics-overlay.fullscreen[data-mode="focus"] {
+  --poster-left: clamp(110px, 24vw, 430px);
+  --poster-size: min(clamp(230px, 30vw, 440px), 50vh);
+}
+
 .now-page-lyrics-overlay.fullscreen[data-mode="focus"] .lyrics-poster {
-  left: clamp(110px, 24vw, 430px);
-  width: min(clamp(230px, 30vw, 440px), 50vh);
   opacity: 0.84;
 }
 
+.now-page-lyrics-overlay.fullscreen[data-mode="full"] {
+  --poster-left: clamp(82px, 18vw, 320px);
+  --poster-size: min(clamp(170px, 20vw, 300px), 38vh);
+}
+
 .now-page-lyrics-overlay.fullscreen[data-mode="full"] .lyrics-poster {
-  left: clamp(82px, 18vw, 320px);
-  width: min(clamp(170px, 20vw, 300px), 38vh);
   opacity: 0.52;
   filter: saturate(0.95) contrast(1) brightness(0.78);
   transform: translate(-50%, -50%) rotate(-2deg) scale(0.98);
 }
 
+.now-page-lyrics-overlay.fullscreen[data-mode="compact"] {
+  --poster-left: clamp(130px, 27vw, 470px);
+  --poster-size: min(clamp(260px, 34vw, 500px), 56vh);
+}
+
 .now-page-lyrics-overlay.fullscreen[data-mode="compact"] .lyrics-poster {
-  left: clamp(130px, 27vw, 470px);
-  width: min(clamp(260px, 34vw, 500px), 56vh);
   opacity: 0.9;
   filter: saturate(1.24) contrast(1.08) brightness(0.94);
   transform: translate(-50%, -50%) rotate(-0.6deg) scale(1.02);
@@ -2498,10 +2513,15 @@ input[type="range"] {
     transform: translateY(0);
   }
 
+  .now-page-lyrics-overlay.fullscreen {
+    --poster-left: 50%;
+    --poster-size: min(66vw, 38vh, 340px);
+  }
+
   .now-page-lyrics-overlay.fullscreen .lyrics-poster {
-    left: 50%;
+    left: var(--poster-left);
     top: 50%;
-    width: min(66vw, 38vh, 340px);
+    width: var(--poster-size);
     opacity: 0.28;
     transform: translate(-50%, -50%) rotate(-1deg) scale(1);
   }
@@ -2529,7 +2549,7 @@ input[type="range"] {
   }
 
   .now-page-lyrics-overlay.fullscreen .lyrics-music-buttons {
-    grid-template-columns: 34px 48px 62px 48px 34px;
+    grid-template-columns: 34px 48px 62px 48px 34px 34px;
     gap: 6px;
   }
 
@@ -2645,4 +2665,40 @@ input[type="range"] {
     animation-duration: 0.01ms !important;
     animation-iteration-count: 1 !important;
   }
+}
+
+/* Track name under the fullscreen lyrics poster: the art alone does not say what is playing. */
+.lyrics-poster-meta {
+  display: none;
+}
+
+.now-page-lyrics-overlay.fullscreen .lyrics-poster-meta {
+  display: grid;
+  position: absolute;
+  z-index: 1;
+  left: var(--poster-left);
+  top: calc(50% + (var(--poster-size) / 2) + clamp(14px, 1.8vh, 26px));
+  width: var(--poster-size);
+  transform: translateX(-50%);
+  gap: 4px;
+  text-align: center;
+  pointer-events: none;
+}
+
+.now-page-lyrics-overlay.fullscreen .lyrics-poster-meta strong {
+  font-size: clamp(15px, 1.15vw, 20px);
+  line-height: 1.25;
+  color: rgba(255, 255, 255, 0.92);
+  overflow: hidden;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+}
+
+.now-page-lyrics-overlay.fullscreen .lyrics-poster-meta span {
+  font-size: clamp(12px, 0.9vw, 15px);
+  color: rgba(255, 255, 255, 0.58);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
