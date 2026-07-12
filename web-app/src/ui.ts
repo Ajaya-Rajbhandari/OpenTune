@@ -1601,6 +1601,11 @@ function renderPlayer(): void {
   ["#miniDisc", "#heroArt", "#sideArt", "#playerArt", "#lyricsPoster", ".web-now-panel"].forEach((selector) => setArtVars(qs<HTMLElement>(selector), track));
   setArtVars(qs<HTMLElement>("#nowPageArt"), track);
   setArtVars(qs<HTMLElement>("#nowPageLyricsOverlay"), track);
+
+  // In the fullscreen lyrics view the artwork is the only thing on screen besides the words, and it
+  // does not say what is playing.
+  setText("#lyricsPosterTitle", isEmpty ? "" : track.title);
+  setText("#lyricsPosterArtist", isEmpty ? "" : track.artist);
   qs<HTMLElement>("#playerSheet").style.setProperty("--sheet-a", track.colorA);
   qs<HTMLElement>("#playerSheet").style.setProperty("--sheet-b", track.colorB);
   const duration = isEmpty ? 0 : Math.max(0, track.duration || player.audio.duration || 0);
