@@ -1,8 +1,9 @@
 import { playerMetadata } from "./api";
-import type { Track } from "./types";
+import type { PlayerFormatDto, Track } from "./types";
 
 interface StreamSource {
-  url: string;
+  /** Every format this browser might decode, best first. */
+  urls: string[];
   expiresAt: number;
 }
 
@@ -18,6 +19,7 @@ export class AudioPlayer {
   readonly audio = new Audio();
   private readonly streamCache = new Map<string, StreamSource>();
   private playbackToken = 0;
+  private suppressErrors = false;
 
   constructor(
     private readonly onState: (state: AudioPlayerState) => void,
@@ -37,6 +39,10 @@ export class AudioPlayer {
     this.audio.addEventListener("pause", () => this.emitState({ isPlaying: false, isBuffering: false }));
     this.audio.addEventListener("ended", this.onEnded);
     this.audio.addEventListener("error", () => {
+      // While a play attempt is in flight, a failing format is expected: the attempt loop is walking
+      // the candidates and will either recover or surface the real error itself. Reporting here too
+      // just fires a toast per discarded format.
+      if (this.suppressErrors) return;
       this.emitState({ isPlaying: false, isBuffering: false });
       this.onError("Playback failed for this stream", this.activeTrackId);
     });
@@ -49,19 +55,23 @@ export class AudioPlayer {
   stop(): void {
     this.playbackToken += 1;
     this.audio.pause();
+    // Clearing the src and reloading makes the element fire an error, which the error handler then
+    // reports as a second, invented playback failure. Every real failure came through as a pair of
+    // toasts because of this, the second one describing the cleanup rather than the cause.
+    this.suppressErrors = true;
     this.audio.removeAttribute("src");
     this.audio.removeAttribute("data-track-id");
     this.audio.load();
+    this.suppressErrors = false;
   }
 
   async play(track: Track): Promise<void> {
     try {
       await this.attempt(track);
     } catch (error) {
-      // A stream URL is signed and time-limited, and the one we cached may have been resolved
-      // under a session that has since gone away. Retrying the same dead URL forever is what turned
-      // a recoverable hiccup into "no supported source" on every track, so throw the cached URL
-      // away and resolve a fresh one before giving up.
+      // A stream URL is signed and time-limited, and the cached one may have been resolved under a
+      // session that has since gone away. Replaying a dead URL forever is what turned a recoverable
+      // failure into a permanently unplayable track, so drop it and resolve once more.
       if (!this.streamCache.delete(track.id)) throw error;
       await this.attempt(track);
     }
@@ -72,13 +82,29 @@ export class AudioPlayer {
     const source = await this.resolveSource(track);
     if (token !== this.playbackToken) return;
 
-    if (this.audio.getAttribute("data-track-id") !== track.id || this.audio.src !== source.url) {
-      this.audio.setAttribute("data-track-id", track.id);
-      this.audio.src = source.url;
-    }
-    if (token !== this.playbackToken) return;
+    let lastError: unknown;
+    this.suppressErrors = true;
+    try {
+      for (const url of source.urls) {
+        if (token !== this.playbackToken) return;
 
-    await this.audio.play();
+        this.audio.setAttribute("data-track-id", track.id);
+        this.audio.src = url;
+
+        try {
+          await this.audio.play();
+          return;
+        } catch (error) {
+          // The browser said it could decode this and could not. Move on to the next format rather
+          // than declaring the whole track unplayable.
+          lastError = error;
+        }
+      }
+    } finally {
+      this.suppressErrors = false;
+    }
+
+    throw lastError ?? new Error("No browser-playable stream URL returned");
   }
 
   async toggle(track: Track): Promise<void> {
@@ -98,6 +124,23 @@ export class AudioPlayer {
     if (this.audio.src) this.audio.currentTime = seconds;
   }
 
+  /**
+   * Ranks a format by how likely this browser is to actually decode it.
+   *
+   * canPlayType() cannot be trusted on its own. Safari answers "maybe" for WebM/Opus and then fails
+   * to decode it, and YouTube usually ranks Opus above AAC on bitrate -- so picking the top format
+   * the browser "supports" silently chose an unplayable one for most tracks in Safari, while working
+   * in Chrome. AAC in MP4 is the one audio format every browser really plays, so prefer it, and
+   * treat canPlayType() as a tie-breaker rather than the answer.
+   */
+  private formatRank(format: PlayerFormatDto): number {
+    const verdict = this.audio.canPlayType(format.mimeType);
+    if (verdict === "") return -1;
+
+    const universallySupported = /audio\/mp4|mp4a/.test(format.mimeType) ? 2 : 0;
+    return universallySupported + (verdict === "probably" ? 1 : 0);
+  }
+
   private async resolveSource(track: Track): Promise<StreamSource> {
     const cached = this.streamCache.get(track.id);
     if (cached && cached.expiresAt > Date.now()) return cached;
@@ -110,14 +153,17 @@ export class AudioPlayer {
     track.duration = player.durationSeconds || track.duration;
     track.thumbnail = player.thumbnail || track.thumbnail;
 
-    // Only formats the browser has actually said it can decode. The old fallback took the first
-    // format with a URL even when canPlayType() had just rejected it, which hands the audio element
-    // a codec it cannot play and reports it as a stream failure.
-    const selectedFormat = player.formats.find((format) => format.url && this.audio.canPlayType(format.mimeType));
-    if (!selectedFormat?.url) throw new Error("No browser-playable stream URL returned");
+    // Keep every candidate, best first, rather than betting the track on one guess. If the browser
+    // then fails to decode the format it claimed to support, there is something left to fall back to.
+    const urls = player.formats
+      .filter((format) => format.url && this.formatRank(format) >= 0)
+      .sort((a, b) => this.formatRank(b) - this.formatRank(a))
+      .map((format) => format.url as string);
+
+    if (!urls.length) throw new Error("No browser-playable stream URL returned");
 
     const source = {
-      url: selectedFormat.url,
+      urls,
       expiresAt: Date.now() + Math.max(60, (player.expiresInSeconds || 1800) - 60) * 1000,
     };
     this.streamCache.set(track.id, source);
