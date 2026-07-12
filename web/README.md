@@ -26,7 +26,11 @@ npm run dev
 
 Vite proxies `/api` to `http://127.0.0.1:8080` during development. Build output from `web-app/dist` is preferred by the Kotlin web API when present.
 
-YouTube Music login uses the optional Chromium helper extension in `web-extension/`. Load that folder as an unpacked extension, then use the Login button in the web app. The helper opens the normal Google / YouTube Music login page, reads the needed YouTube cookies through extension permissions, and sends the session to the local `/api/auth/session` endpoint.
+YouTube Music login uses the optional Chromium helper extension in `web-extension/`. For production, publish the helper to the Chrome Web Store or Edge Add-ons, then build the web app with `VITE_OPENTUNE_HELPER_INSTALL_URL` set to the published listing URL. The app opens that install page when the user clicks Login with YouTube Music and the helper is missing.
+
+Users who are already logged in on OpenTune Android can use Pair with OpenTune Android instead. The web app creates a short-lived code through `/api/auth/pairing/start`, Android sends its saved YouTube Music session to `/api/auth/pairing/complete`, and the web app polls `/api/auth/pairing/status` until the session is saved. Same-network pairing requires opening OpenTune Web with a LAN-reachable URL instead of `localhost`.
+
+For local development, load `web-extension/` as an unpacked Chromium extension, then use the Login button in the web app. The helper opens the normal Google / YouTube Music login page, reads the needed YouTube cookies through extension permissions, and sends the session to the local `/api/auth/session` endpoint.
 
 The web API persists that session locally at `~/.config/opentune-web/auth-session.json` so it survives API restarts. Set `OPENTUNE_WEB_AUTH_FILE` or `-Dopentune.web.auth.file=/path/to/auth-session.json` to override the file location. Logging out deletes the saved session.
 

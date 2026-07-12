@@ -1298,6 +1298,7 @@ h1 {
 
 .now-page-lyrics-overlay header,
 .lyrics-toolbar,
+.lyrics-music-controls,
 .now-page-lyrics-overlay .now-page-scroll {
   position: relative;
   z-index: 2;
@@ -1404,6 +1405,86 @@ h1 {
   color: #111;
 }
 
+.lyrics-music-controls {
+  display: none;
+}
+
+.now-page-lyrics-overlay.fullscreen .lyrics-music-controls {
+  position: absolute;
+  left: clamp(110px, 24vw, 430px);
+  bottom: clamp(26px, 4.5vh, 58px);
+  z-index: 3;
+  display: grid;
+  width: min(clamp(300px, 30vw, 500px), 52vh);
+  gap: 12px;
+  padding: 14px 16px 16px;
+  border: 1px solid rgba(255, 255, 255, 0.11);
+  border-radius: 24px;
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.09), rgba(255, 255, 255, 0.035)),
+    rgba(8, 9, 15, 0.56);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.08),
+    0 20px 60px rgba(0, 0, 0, 0.38),
+    0 0 40px color-mix(in srgb, var(--sheet-a, #8db7e8) 10%, transparent);
+  backdrop-filter: blur(24px) saturate(1.18);
+  transform: translateX(-50%);
+}
+
+.now-page-lyrics-overlay.fullscreen[data-mode="full"] .lyrics-music-controls {
+  left: clamp(82px, 18vw, 320px);
+  width: min(clamp(280px, 25vw, 440px), 48vh);
+}
+
+.now-page-lyrics-overlay.fullscreen[data-mode="compact"] .lyrics-music-controls {
+  left: clamp(130px, 27vw, 470px);
+  width: min(clamp(320px, 34vw, 540px), 58vh);
+}
+
+.lyrics-music-progress {
+  display: grid;
+  grid-template-columns: 42px minmax(0, 1fr) 42px;
+  align-items: center;
+  gap: 10px;
+  color: color-mix(in srgb, var(--muted) 82%, transparent);
+  font-size: 12px;
+  font-weight: 900;
+}
+
+.lyrics-music-progress input {
+  min-width: 0;
+}
+
+.lyrics-music-progress span:last-child {
+  text-align: right;
+}
+
+.lyrics-music-buttons {
+  display: grid;
+  grid-template-columns: 38px 56px 70px 56px 38px;
+  align-items: center;
+  justify-content: center;
+  gap: clamp(6px, 0.8vw, 10px);
+}
+
+.lyrics-music-buttons .icon-button {
+  width: 38px;
+  height: 38px;
+  background: rgba(255, 255, 255, 0.06);
+}
+
+.lyrics-music-buttons .large-control {
+  width: 56px;
+  height: 46px;
+  background: rgba(255, 255, 255, 0.1);
+}
+
+.lyrics-music-buttons .main-control {
+  width: 70px;
+  height: 52px;
+  box-shadow: 0 10px 28px rgba(0, 0, 0, 0.26);
+}
+
 .now-page-lyrics-overlay .now-page-scroll {
   align-content: center;
   justify-items: center;
@@ -1425,8 +1506,6 @@ h1 {
 
 .now-page-lyrics-overlay .lyric-line {
   --lyric-progress: 0%;
-  --lyric-progress-start: 0%;
-  --lyric-remaining: 2.4s;
   position: relative;
   max-width: 920px;
   color: color-mix(in srgb, var(--muted) 72%, transparent);
@@ -1448,17 +1527,16 @@ h1 {
 }
 
 @supports ((-webkit-background-clip: text) or (background-clip: text)) {
-  .now-page-lyrics-overlay .lyric-line.active {
+  .now-page-lyrics-overlay[data-timing="calibrated"] .lyric-line.active {
     background-image: linear-gradient(
       90deg,
       var(--text) 0 var(--lyric-progress),
-      color-mix(in srgb, var(--muted) 64%, transparent) var(--lyric-progress) 100%
+      color-mix(in srgb, var(--text) 68%, var(--muted)) var(--lyric-progress) 100%
     );
     background-clip: text;
     -webkit-background-clip: text;
     color: transparent;
     -webkit-text-fill-color: transparent;
-    animation: lyric-timed-fill var(--lyric-remaining, 2.4s) linear forwards;
   }
 }
 
@@ -1508,15 +1586,6 @@ h1 {
   to {
     filter: hue-rotate(14deg) saturate(1.18);
     transform: scale(1.035);
-  }
-}
-
-@keyframes lyric-timed-fill {
-  from {
-    --lyric-progress: var(--lyric-progress-start, 0%);
-  }
-  to {
-    --lyric-progress: 100%;
   }
 }
 
@@ -1959,6 +2028,16 @@ input[type="range"] {
   font-weight: 900;
 }
 
+.lyric-line[role="button"] {
+  cursor: pointer;
+}
+
+.lyric-line[role="button"]:focus-visible {
+  outline: 2px solid color-mix(in srgb, var(--accent) 70%, white);
+  outline-offset: 8px;
+  border-radius: 10px;
+}
+
 .empty-state {
   max-width: 620px;
   margin: 12px 0;
@@ -2006,6 +2085,7 @@ input[type="range"] {
 .account-divider[hidden],
 .account-install-card[hidden],
 .account-install-fallback[hidden],
+.account-pairing-details[hidden],
 .account-primary[hidden] {
   display: none;
 }
@@ -2048,7 +2128,8 @@ input[type="range"] {
   line-height: 1.45;
 }
 
-.account-extension-card {
+.account-extension-card,
+.account-pairing-card {
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto;
   gap: 14px;
@@ -2061,16 +2142,59 @@ input[type="range"] {
     rgba(255, 255, 255, 0.05);
 }
 
-.account-extension-card div {
+.account-extension-card div,
+.account-pairing-card div {
   display: grid;
   gap: 5px;
   min-width: 0;
 }
 
-.account-extension-card span {
+.account-extension-card span,
+.account-pairing-card span {
   color: var(--muted);
   font-size: 13px;
   line-height: 1.4;
+}
+
+.account-pairing-card {
+  border-color: color-mix(in srgb, var(--accent-2) 40%, var(--line));
+  background:
+    radial-gradient(circle at 100% 20%, rgba(81, 208, 191, 0.14), transparent 42%),
+    rgba(255, 255, 255, 0.05);
+}
+
+.account-pairing-details {
+  display: grid;
+  gap: 12px;
+  padding: 16px;
+  border: 1px solid color-mix(in srgb, var(--accent-2) 42%, var(--line));
+  border-radius: 14px;
+  background: rgba(255, 255, 255, 0.04);
+}
+
+.account-pairing-details > div:first-child {
+  display: grid;
+  gap: 4px;
+}
+
+.account-pairing-details span,
+.account-pairing-details p {
+  margin: 0;
+  color: var(--muted);
+  font-size: 13px;
+  line-height: 1.45;
+}
+
+.account-pairing-details strong {
+  color: var(--text);
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 26px;
+  letter-spacing: 0.12em;
+}
+
+.account-pairing-details code {
+  color: var(--text);
+  word-break: break-all;
 }
 
 .account-install-card {
@@ -2385,6 +2509,41 @@ input[type="range"] {
     width: 100%;
     padding-right: clamp(14px, 5vw, 40px);
     padding-left: clamp(14px, 5vw, 40px);
+    padding-bottom: clamp(190px, 26vh, 240px);
+  }
+
+  .now-page-lyrics-overlay.fullscreen .lyrics-music-controls {
+    left: 50%;
+    bottom: max(14px, env(safe-area-inset-bottom));
+    width: min(calc(100vw - 28px), 460px);
+    padding: 12px;
+    border-radius: 20px;
+    transform: translateX(-50%);
+  }
+
+  .now-page-lyrics-overlay.fullscreen .lyrics-music-progress {
+    grid-template-columns: 38px minmax(0, 1fr) 38px;
+    gap: 8px;
+  }
+
+  .now-page-lyrics-overlay.fullscreen .lyrics-music-buttons {
+    grid-template-columns: 34px 48px 62px 48px 34px;
+    gap: 6px;
+  }
+
+  .now-page-lyrics-overlay.fullscreen .lyrics-music-buttons .icon-button {
+    width: 34px;
+    height: 34px;
+  }
+
+  .now-page-lyrics-overlay.fullscreen .lyrics-music-buttons .large-control {
+    width: 48px;
+    height: 42px;
+  }
+
+  .now-page-lyrics-overlay.fullscreen .lyrics-music-buttons .main-control {
+    width: 62px;
+    height: 48px;
   }
 }
 
@@ -2393,7 +2552,12 @@ input[type="range"] {
     grid-template-columns: 1fr;
   }
 
-  .account-extension-card .account-primary {
+  .account-pairing-card {
+    grid-template-columns: 1fr;
+  }
+
+  .account-extension-card .account-primary,
+  .account-pairing-card .account-primary {
     width: 100%;
   }
 
