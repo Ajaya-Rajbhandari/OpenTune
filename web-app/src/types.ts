@@ -146,7 +146,12 @@ export interface AppState {
     error: string;
   };
   currentTrackId: string;
+  /** Upcoming tracks, in the order they will play. Already shuffled when shuffle is on. */
   queue: string[];
+  /** The tracks that were actually played, oldest first, so "previous" can retrace real steps. */
+  history: string[];
+  /** The context that was started, in its natural order: what shuffle draws from and unshuffle restores. */
+  queueSource: string[];
   favorites: Set<string>;
   downloaded: Set<string>;
   isPlaying: boolean;
