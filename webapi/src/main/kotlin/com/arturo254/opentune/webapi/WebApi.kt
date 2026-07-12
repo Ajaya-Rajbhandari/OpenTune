@@ -3,6 +3,7 @@ package com.arturo254.opentune.webapi
 import com.arturo254.opentune.innertube.NewPipeUtils
 import com.arturo254.opentune.innertube.PlaybackAuthState
 import com.arturo254.opentune.innertube.YouTube
+import com.arturo254.opentune.innertube.models.AccountInfo
 import com.arturo254.opentune.innertube.models.AlbumItem
 import com.arturo254.opentune.innertube.models.Artist
 import com.arturo254.opentune.innertube.models.ArtistItem
@@ -24,6 +25,7 @@ import com.arturo254.opentune.innertube.utils.completed
 import com.arturo254.opentune.innertube.utils.parseCookieString
 import com.arturo254.opentune.kugou.KuGou
 import com.arturo254.opentune.lrclib.LrcLib
+import io.ktor.client.plugins.ClientRequestException
 import io.ktor.http.HttpStatusCode
 import io.ktor.serialization.kotlinx.json.json
 import io.ktor.server.application.Application
@@ -41,7 +43,9 @@ import io.ktor.server.routing.post
 import io.ktor.server.routing.route
 import io.ktor.server.routing.routing
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
 import java.io.File
@@ -50,6 +54,9 @@ import java.nio.file.Files
 import java.nio.file.Path
 import java.nio.file.StandardOpenOption
 import java.nio.file.attribute.PosixFilePermission
+import java.security.SecureRandom
+import java.util.Locale
+import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.TimeUnit
 
 fun main(args: Array<String>) = EngineMain.main(args)
@@ -57,15 +64,25 @@ fun main(args: Array<String>) = EngineMain.main(args)
 @Volatile
 private var cachedWebAccount: WebAccountDto? = null
 
+@Volatile
+private var cachedWebAccountAtMillis: Long = 0L
+
 private val webAuthJson = Json {
     ignoreUnknownKeys = true
     explicitNulls = false
     encodeDefaults = true
 }
 private val webAuthSessionPath: Path = resolveWebAuthSessionPath()
+private val pairingRandom = SecureRandom()
+private val pendingPairings = ConcurrentHashMap<String, PairingSession>()
+private const val pairingCodeAlphabet = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"
+private val pairingTtlMillis = TimeUnit.MINUTES.toMillis(10)
+private val authVerifyTimeoutMillis = TimeUnit.SECONDS.toMillis(10)
+private val accountCacheTtlMillis = TimeUnit.MINUTES.toMillis(5)
 
 fun Application.module() {
     restorePersistedWebAuthSession()
+    verifyRestoredWebAuthSession()
 
     install(ContentNegotiation) {
         json(
@@ -93,6 +110,83 @@ fun Application.module() {
                     call.respond(webAuthStatus())
                 }
 
+                route("/pairing") {
+                    post("/start") {
+                        pruneExpiredPairings()
+                        val code = generatePairingCode()
+                        val expiresAt = System.currentTimeMillis() + pairingTtlMillis
+                        pendingPairings[code] = PairingSession(expiresAt = expiresAt)
+                        call.respond(
+                            PairingStartResponseDto(
+                                code = code,
+                                expiresAt = expiresAt,
+                            ),
+                        )
+                    }
+
+                    get("/status") {
+                        val code = normalizePairingCode(call.requiredQuery("code") ?: return@get)
+                        val pairing = pendingPairings[code]
+                        when {
+                            pairing == null -> call.respond(PairingStatusResponseDto(state = "missing"))
+                            pairing.isExpired -> {
+                                pendingPairings.remove(code)
+                                call.respond(PairingStatusResponseDto(state = "expired"))
+                            }
+                            pairing.authStatus != null -> call.respond(
+                                PairingStatusResponseDto(
+                                    state = "paired",
+                                    auth = pairing.authStatus,
+                                ),
+                            )
+                            else -> call.respond(
+                                PairingStatusResponseDto(
+                                    state = "pending",
+                                    expiresAt = pairing.expiresAt,
+                                ),
+                            )
+                        }
+                    }
+
+                    post("/complete") {
+                        pruneExpiredPairings()
+                        val request = call.receive<PairingCompleteRequestDto>()
+                        val code = normalizePairingCode(request.code)
+                        val pairing = pendingPairings[code]
+                        if (pairing == null || pairing.isExpired) {
+                            if (pairing?.isExpired == true) pendingPairings.remove(code)
+                            call.respond(HttpStatusCode.NotFound, ApiError("Pairing code expired or not found"))
+                            return@post
+                        }
+
+                        val session = request.session()
+                        val cookie = session.cookie.normalizedAuthValue().orEmpty()
+                        if (cookie.isBlank()) {
+                            call.respond(HttpStatusCode.BadRequest, ApiError("Missing YouTube Music cookie"))
+                            return@post
+                        }
+                        if ("SAPISID" !in parseCookieString(cookie)) {
+                            call.respond(HttpStatusCode.BadRequest, ApiError("Cookie must include SAPISID"))
+                            return@post
+                        }
+
+                        val normalizedSession = session.copy(
+                            cookie = cookie,
+                            visitorData = session.visitorData.normalizedAuthValue(),
+                            dataSyncId = session.dataSyncId.normalizedAuthValue(),
+                            poToken = session.poToken.normalizedAuthValue(),
+                        )
+                        applyVerifiedWebAuthSession(normalizedSession).onFailure { error ->
+                            call.respond(HttpStatusCode.Unauthorized, ApiError(rejectedSessionMessage(error)))
+                            return@post
+                        }
+                        persistWebAuthSession(normalizedSession)
+                        val status = webAuthStatus()
+                        pendingPairings[code] = pairing.copy(authStatus = status)
+                        call.respond(PairingCompleteResponseDto(ok = true, status = status))
+                    }
+                }
+
                 post("/session") {
                     val request = call.receive<AuthSessionRequestDto>()
                     val cookie = request.cookie.normalizedAuthValue().orEmpty()
@@ -111,10 +205,13 @@ fun Application.module() {
                         dataSyncId = request.dataSyncId.normalizedAuthValue(),
                         poToken = request.poToken.normalizedAuthValue(),
                     )
-                    applyWebAuthSession(session)
+                    applyVerifiedWebAuthSession(session).onFailure { error ->
+                        call.respond(HttpStatusCode.Unauthorized, ApiError(rejectedSessionMessage(error)))
+                        return@post
+                    }
                     persistWebAuthSession(session)
 
-                    call.respond(webAuthStatus(refreshAccount = true))
+                    call.respond(webAuthStatus())
                 }
 
                 delete("/session") {
@@ -275,12 +372,23 @@ fun Application.module() {
                 }
 
                 call.respondApi {
+                    val requestedTitle = call.request.queryParameters["title"]?.trim().orEmpty()
+                    val requestedArtist = call.request.queryParameters["artist"]?.trim().orEmpty()
+                    val requestedDuration = call.request.queryParameters["duration"]?.toIntOrNull() ?: -1
+                    val playerDetails = if (requestedDuration <= 0 || requestedTitle.isBlank() || requestedArtist.isBlank()) {
+                        runCatching { resolvePlayer(videoId).response.videoDetails }.getOrNull()
+                    } else {
+                        null
+                    }
+
                     resolveLyrics(
                         videoId = videoId,
-                        title = call.request.queryParameters["title"]?.trim().orEmpty(),
-                        artist = call.request.queryParameters["artist"]?.trim().orEmpty(),
+                        title = requestedTitle.ifBlank { playerDetails?.title.orEmpty() },
+                        artist = requestedArtist.ifBlank { playerDetails?.author.orEmpty() },
                         album = call.request.queryParameters["album"]?.trim()?.takeIf { it.isNotBlank() },
-                        duration = call.request.queryParameters["duration"]?.toIntOrNull() ?: -1,
+                        duration = requestedDuration.takeIf { it > 0 }
+                            ?: playerDetails?.lengthSeconds?.toIntOrNull()
+                            ?: -1,
                     )
                 }
             }
@@ -315,15 +423,46 @@ fun Application.module() {
     }
 }
 
+/**
+ * Runs [block], and if YouTube rejects the stored credentials mid-flight, drops them and retries the
+ * call anonymously.
+ *
+ * A session can die at any time. Without this, the first 401 wedges the server: every later browse
+ * still attaches `onBehalfOfUser` from the dead session and fails the same way, so the whole app
+ * stays broken until it is restarted.
+ */
 private suspend fun ApplicationCall.respondApi(block: suspend () -> Any) {
     try {
         respond(block())
+        return
     } catch (error: Throwable) {
-        respond(
-            HttpStatusCode.BadGateway,
-            ApiError(error.message ?: error::class.simpleName ?: "Request failed"),
-        )
+        if (!error.isUnauthorizedResponse() || !YouTube.authState.hasLoginCookie) {
+            respondApiError(error)
+            return
+        }
+        degradeWebAuthSession()
+        deletePersistedWebAuthSession()
     }
+
+    // Retried once, now signed out. A second failure is a real error, not an expired session.
+    try {
+        respond(block())
+    } catch (retryError: Throwable) {
+        respondApiError(retryError)
+    }
+}
+
+private suspend fun ApplicationCall.respondApiError(error: Throwable) {
+    // Falling back to the exception class name leaked internals to the client
+    // ("NullPointerException" as user-facing copy). Keep deliberate messages thrown by our
+    // own code, log everything, and give the client generic copy for anything unexpected.
+    System.err.println("[opentune-web-api] ${request.local.uri} failed: ${error::class.simpleName}: ${error.message}")
+    error.printStackTrace()
+
+    respond(
+        HttpStatusCode.BadGateway,
+        ApiError(error.message?.takeIf { it.isNotBlank() } ?: "Request failed"),
+    )
 }
 
 private fun applyWebAuthSession(session: AuthSessionRequestDto) {
@@ -335,13 +474,92 @@ private fun applyWebAuthSession(session: AuthSessionRequestDto) {
         webClientPoTokenEnabled = !session.poToken.normalizedAuthValue().isNullOrBlank(),
     )
     YouTube.useLoginForBrowse = true
-    cachedWebAccount = null
+    cacheWebAccount(null)
 }
 
 private fun clearWebAuthSession() {
     YouTube.authState = PlaybackAuthState.EMPTY
     YouTube.useLoginForBrowse = false
-    cachedWebAccount = null
+    cacheWebAccount(null)
+}
+
+/**
+ * Drops the signed-in credentials but keeps [PlaybackAuthState.visitorData], so browse and search
+ * keep working as an anonymous session instead of failing outright.
+ *
+ * A dead cookie must not merely stop authenticating: every browse request carries
+ * `context.user.onBehalfOfUser = dataSyncId`, and YouTube answers 401 to an on-behalf-of request
+ * from a session it cannot identify. Leaving the credentials in place turns "signed out" into a
+ * hard failure on every endpoint.
+ */
+private fun degradeWebAuthSession() {
+    YouTube.authState = PlaybackAuthState(visitorData = YouTube.authState.visitorData)
+    YouTube.useLoginForBrowse = false
+    cacheWebAccount(null)
+}
+
+private fun rejectedSessionMessage(error: Throwable): String =
+    if (error.isRejectedSession()) {
+        "YouTube Music rejected these credentials. Sign in at music.youtube.com and capture the session again."
+    } else {
+        "Could not verify the YouTube Music session: ${error.message ?: error::class.simpleName}"
+    }
+
+/** True when YouTube rejected the request's credentials outright. Safe to conclude from any call. */
+private fun Throwable.isUnauthorizedResponse(): Boolean =
+    this is ClientRequestException &&
+        (response.status == HttpStatusCode.Unauthorized || response.status == HttpStatusCode.Forbidden)
+
+/**
+ * True when YouTube answered but refused to identify the session, i.e. the cookie is not usable.
+ *
+ * Only meaningful for the result of [YouTube.accountInfo], which throws [IllegalStateException] when
+ * the response carries no account header. Elsewhere that exception means a parse failure, not a
+ * signed-out session, so use [isUnauthorizedResponse] instead.
+ */
+private fun Throwable.isRejectedSession(): Boolean =
+    isUnauthorizedResponse() || this is IllegalStateException
+
+/**
+ * Applies [session] and confirms YouTube actually accepts it. A cookie can contain SAPISID and
+ * still be expired, so a structural check alone would persist credentials that fail on every call.
+ *
+ * A session that fails verification is rolled back, so submitting bad credentials never disturbs
+ * a session that was already working.
+ */
+private suspend fun applyVerifiedWebAuthSession(session: AuthSessionRequestDto): Result<Unit> {
+    val previousAuthState = YouTube.authState
+    val previousUseLoginForBrowse = YouTube.useLoginForBrowse
+    val previousAccount = cachedWebAccount
+
+    applyWebAuthSession(session)
+    return YouTube.accountInfo()
+        .onSuccess { cacheWebAccount(it.toWebAccountDto()) }
+        .onFailure {
+            YouTube.authState = previousAuthState
+            YouTube.useLoginForBrowse = previousUseLoginForBrowse
+            cacheWebAccount(previousAccount)
+        }
+        .map { }
+}
+
+/**
+ * Confirms the credentials restored from disk still work. Network failures leave the session
+ * untouched: only an outright rejection from YouTube signs the user out.
+ */
+private fun verifyRestoredWebAuthSession() {
+    if (!YouTube.authState.hasLoginCookie) return
+    val result = runBlocking {
+        withTimeoutOrNull(authVerifyTimeoutMillis) { YouTube.accountInfo() }
+    } ?: return
+
+    result
+        .onSuccess { cacheWebAccount(it.toWebAccountDto()) }
+        .onFailure { error ->
+            if (!error.isRejectedSession()) return@onFailure
+            degradeWebAuthSession()
+            deletePersistedWebAuthSession()
+        }
 }
 
 private fun restorePersistedWebAuthSession() {
@@ -420,27 +638,25 @@ private fun setOwnerOnlyPermissions(path: Path, directory: Boolean) {
 }
 
 private suspend fun webAuthStatus(refreshAccount: Boolean = false): AuthStatusDto {
-    val authState = YouTube.authState
-    val loggedIn = authState.hasLoginCookie
+    var loggedIn = YouTube.authState.hasLoginCookie
     var accountError: String? = null
 
     if (!loggedIn) {
-        cachedWebAccount = null
-    } else if (refreshAccount || cachedWebAccount == null) {
+        cacheWebAccount(null)
+    } else if (refreshAccount || cachedWebAccount == null || isAccountCacheStale()) {
         YouTube.accountInfo()
-            .onSuccess { account ->
-                cachedWebAccount = WebAccountDto(
-                    name = account.name,
-                    email = account.email,
-                    channelHandle = account.channelHandle,
-                    thumbnailUrl = account.thumbnailUrl,
-                )
-            }
+            .onSuccess { cacheWebAccount(it.toWebAccountDto()) }
             .onFailure { error ->
                 accountError = error.message ?: error::class.simpleName
+                if (error.isRejectedSession()) {
+                    degradeWebAuthSession()
+                    deletePersistedWebAuthSession()
+                    loggedIn = false
+                }
             }
     }
 
+    val authState = YouTube.authState
     return AuthStatusDto(
         loggedIn = loggedIn,
         hasCookie = !authState.cookie.isNullOrBlank(),
@@ -453,8 +669,43 @@ private suspend fun webAuthStatus(refreshAccount: Boolean = false): AuthStatusDt
     )
 }
 
+/** Re-checks a warm cache periodically, so a session that dies while idle is still noticed. */
+private fun isAccountCacheStale(): Boolean =
+    System.currentTimeMillis() - cachedWebAccountAtMillis >= accountCacheTtlMillis
+
+private fun cacheWebAccount(account: WebAccountDto?) {
+    cachedWebAccount = account
+    cachedWebAccountAtMillis = if (account == null) 0L else System.currentTimeMillis()
+}
+
+private fun AccountInfo.toWebAccountDto(): WebAccountDto = WebAccountDto(
+    name = name,
+    email = email,
+    channelHandle = channelHandle,
+    thumbnailUrl = thumbnailUrl,
+)
+
 private fun String?.normalizedAuthValue(): String? =
     this?.trim()?.takeIf { it.isNotEmpty() && !it.equals("null", ignoreCase = true) }
+
+private fun normalizePairingCode(value: String): String =
+    value.filter { it.isLetterOrDigit() }.uppercase(Locale.US)
+
+private fun generatePairingCode(): String {
+    repeat(12) {
+        val code = buildString {
+            repeat(8) {
+                append(pairingCodeAlphabet[pairingRandom.nextInt(pairingCodeAlphabet.length)])
+            }
+        }
+        if (!pendingPairings.containsKey(code)) return code
+    }
+    error("Unable to generate pairing code")
+}
+
+private fun pruneExpiredPairings() {
+    pendingPairings.entries.removeIf { it.value.isExpired }
+}
 
 private suspend fun ApplicationCall.requiredQuery(name: String): String? {
     val value = request.queryParameters[name]?.trim().orEmpty()
@@ -512,7 +763,7 @@ private suspend fun resolveLyrics(
     val youtubeLyrics = runCatching {
         val next = YouTube.next(WatchEndpoint(videoId = videoId)).getOrThrow()
         val endpoint = next.lyricsEndpoint ?: error("Lyrics endpoint not found")
-        YouTube.lyrics(endpoint).getOrThrow()?.takeIf { it.isNotBlank() }
+        YouTube.lyrics(endpoint).getOrThrow()?.validLyricsOrNull()
             ?: error("Lyrics unavailable")
     }.getOrNull()
 
@@ -521,8 +772,8 @@ private suspend fun resolveLyrics(
             title = title,
             artist = artist,
             duration = duration,
-            album = album,
-        ).getOrNull()?.let { lyrics ->
+            album = null,
+        ).getOrNull()?.validLyricsOrNull()?.let { lyrics ->
             return lyrics.toLyricsResponse(source = "lrclib", synced = lyrics.hasLrcTimestamps())
         }
 
@@ -530,7 +781,7 @@ private suspend fun resolveLyrics(
             title = title,
             artist = artist,
             duration = duration,
-        ).getOrNull()?.let { lyrics ->
+        ).getOrNull()?.validLyricsOrNull()?.let { lyrics ->
             return lyrics.toLyricsResponse(source = "kugou", synced = lyrics.hasLrcTimestamps())
         }
     }
@@ -554,6 +805,26 @@ private fun String.toLyricsResponse(source: String, synced: Boolean): LyricsResp
         entries = entries,
     )
 }
+
+private fun String.validLyricsOrNull(): String? =
+    takeIf { it.isNotBlank() && !it.isProviderPlaceholderLyrics() }
+
+private fun String.isProviderPlaceholderLyrics(): Boolean {
+    val normalizedLines = lineSequence()
+        .map { it.stripLrcTimestamps().trim() }
+        .map { it.replace(lrcMetadataTagRegex, "").trim() }
+        .filterNot { it.isBlank() }
+        .map { it.normalizedLyricsPlaceholderText() }
+        .filter { it.isNotBlank() }
+        .toList()
+
+    if (normalizedLines.isEmpty()) return true
+    val combined = normalizedLines.joinToString(separator = "")
+    return combined in lyricsPlaceholderTexts || normalizedLines.all { it in lyricsPlaceholderTexts }
+}
+
+private fun String.normalizedLyricsPlaceholderText(): String =
+    lowercase(Locale.ROOT).filter { it.isLetterOrDigit() }
 
 private fun String.parseLrcEntries(): List<LyricEntryDto> =
     lines().flatMap { line ->
@@ -583,6 +854,24 @@ private fun String.stripLrcTimestamps(): String =
 
 private val lrcTimestampRegex = Regex("\\[(\\d{1,2}):(\\d{2})(?:[.:](\\d{1,3}))?]")
 private val lrcTimestampPrefixRegex = Regex("^(?:\\[\\d{1,2}:\\d{2}(?:[.:]\\d{1,3})?])+\\s*")
+private val lrcMetadataTagRegex = Regex("\\[[a-zA-Z]+:[^]]*]")
+private val lyricsPlaceholderTexts = setOf(
+    "纯音乐请欣赏",
+    "纯音乐请您欣赏",
+    "此歌曲为纯音乐请欣赏",
+    "此歌曲为纯音乐请您欣赏",
+    "此歌曲为没有填词的纯音乐请欣赏",
+    "此歌曲为没有填词的纯音乐请您欣赏",
+    "该歌曲为纯音乐请欣赏",
+    "该歌曲为纯音乐请您欣赏",
+    "该歌曲为没有填词的纯音乐请欣赏",
+    "该歌曲为没有填词的纯音乐请您欣赏",
+    "暂无歌词",
+    "暂无歌词请欣赏",
+    "暂无歌词敬请欣赏",
+    "nolyrics",
+    "instrumental",
+)
 
 private val playbackClients = listOf(
     YouTubeClient.WEB_REMIX,
@@ -913,6 +1202,49 @@ private data class AuthStatusDto(
     val useLoginForBrowse: Boolean,
     val account: WebAccountDto? = null,
     val error: String? = null,
+)
+
+private data class PairingSession(
+    val expiresAt: Long,
+    val authStatus: AuthStatusDto? = null,
+) {
+    val isExpired: Boolean
+        get() = System.currentTimeMillis() > expiresAt
+}
+
+@Serializable
+private data class PairingStartResponseDto(
+    val code: String,
+    val expiresAt: Long,
+)
+
+@Serializable
+private data class PairingStatusResponseDto(
+    val state: String,
+    val expiresAt: Long? = null,
+    val auth: AuthStatusDto? = null,
+)
+
+@Serializable
+private data class PairingCompleteRequestDto(
+    val code: String,
+    val cookie: String = "",
+    val visitorData: String? = null,
+    val dataSyncId: String? = null,
+    val poToken: String? = null,
+) {
+    fun session(): AuthSessionRequestDto = AuthSessionRequestDto(
+        cookie = cookie,
+        visitorData = visitorData,
+        dataSyncId = dataSyncId,
+        poToken = poToken,
+    )
+}
+
+@Serializable
+private data class PairingCompleteResponseDto(
+    val ok: Boolean,
+    val status: AuthStatusDto,
 )
 
 @Serializable
