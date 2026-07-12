@@ -228,21 +228,6 @@ fun AccountSettings(
                         checked = ytmSync,
                         onCheckedChange = onYtmSyncChange
                     )
-
-                    HorizontalDivider(
-                        modifier = Modifier.padding(start = 56.dp),
-                        color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.3f)
-                    )
-
-                    SettingsClickableItem(
-                        icon = painterResource(R.drawable.sync),
-                        title = "Pair with OpenTune Web",
-                        subtitle = "Send this Android login to OpenTune Web",
-                        onClick = {
-                            onClose()
-                            navController.navigate(WEB_PAIRING_ROUTE)
-                        }
-                    )
                 }
             }
 
@@ -297,6 +282,28 @@ fun AccountSettings(
                         if (!isLoggedIn) showTokenEditor = true
                         else if (!showToken) showToken = true
                         else showTokenEditor = true
+                    }
+                )
+
+                HorizontalDivider(
+                    modifier = Modifier.padding(start = 56.dp),
+                    color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.3f)
+                )
+
+                // Deliberately outside the signed-in-only section. Pairing is how a signed-out
+                // device gets a login in the first place, so hiding it until you are logged in
+                // makes it unreachable exactly when it is needed.
+                SettingsClickableItem(
+                    icon = painterResource(R.drawable.sync),
+                    title = "Pair with OpenTune Web",
+                    subtitle = if (isLoggedIn) {
+                        "Send this Android login to OpenTune Web"
+                    } else {
+                        "Sign in using the login from OpenTune Web"
+                    },
+                    onClick = {
+                        onClose()
+                        navController.navigate(WEB_PAIRING_ROUTE)
                     }
                 )
             }

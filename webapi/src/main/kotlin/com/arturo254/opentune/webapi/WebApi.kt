@@ -601,8 +601,7 @@ private suspend fun ApplicationCall.respondApi(block: suspend () -> Any) {
             respondApiError(error)
             return
         }
-        degradeWebAuthSession()
-        deletePersistedWebAuthSession()
+        dropDeadWebAuthSession("YouTube rejected the session on ${request.local.uri}")
     }
 
     // Retried once, now signed out. A second failure is a real error, not an expired session.
@@ -669,6 +668,20 @@ private fun clearWebAuthSession() {
  * from a session it cannot identify. Leaving the credentials in place turns "signed out" into a
  * hard failure on every endpoint.
  */
+/**
+ * Throws away credentials YouTube has actually rejected, and says so.
+ *
+ * Losing a login is a big deal -- the user has to obtain a new one, and with pairing the phone may
+ * be relying on this server to hold it. It previously happened silently: the session was deleted,
+ * the request was retried anonymously, a 200 went back, and nothing anywhere said why the account
+ * had vanished. Never drop a session without leaving a reason behind.
+ */
+private fun dropDeadWebAuthSession(reason: String) {
+    System.err.println("[opentune-web-api] Signed out: $reason. The saved session has been deleted.")
+    degradeWebAuthSession()
+    deletePersistedWebAuthSession()
+}
+
 private fun degradeWebAuthSession() {
     YouTube.authState = PlaybackAuthState(visitorData = YouTube.authState.visitorData)
     YouTube.useLoginForBrowse = false
@@ -695,8 +708,26 @@ private fun Throwable.isUnauthorizedResponse(): Boolean =
  * the response carries no account header. Elsewhere that exception means a parse failure, not a
  * signed-out session, so use [isUnauthorizedResponse] instead.
  */
+/**
+ * Whether a session offered to us looks unusable.
+ *
+ * Deliberately broad: this judges a session someone just handed over, so refusing a merely-suspect
+ * one costs nothing. Do NOT use it to decide whether to throw away a session we already hold --
+ * see [isConfirmedDeadSession].
+ */
 private fun Throwable.isRejectedSession(): Boolean =
     isUnauthorizedResponse() || this is IllegalStateException
+
+/**
+ * Whether YouTube actually rejected the credentials we are holding.
+ *
+ * Only a real 401/403 counts. [isRejectedSession] is far too broad to delete a stored login by:
+ * `accountInfo()` throws IllegalStateException whenever YouTube's reply does not parse into an
+ * account block, which happens for reasons that have nothing to do with a dead cookie. Treating
+ * that as proof of rejection silently deleted a perfectly good saved session -- the credentials
+ * were destroyed on disk, the request retried anonymously and returned 200, and nothing was logged.
+ */
+private fun Throwable.isConfirmedDeadSession(): Boolean = isUnauthorizedResponse()
 
 /**
  * Applies [session] and confirms YouTube actually accepts it. A cookie can contain SAPISID and
@@ -734,9 +765,13 @@ private fun verifyRestoredWebAuthSession() {
     result
         .onSuccess { cacheWebAccount(it.toWebAccountDto()) }
         .onFailure { error ->
-            if (!error.isRejectedSession()) return@onFailure
-            degradeWebAuthSession()
-            deletePersistedWebAuthSession()
+            if (!error.isConfirmedDeadSession()) {
+                System.err.println(
+                    "[opentune-web-api] Could not read the account on startup, keeping the saved session: ${error.message}",
+                )
+                return@onFailure
+            }
+            dropDeadWebAuthSession("YouTube rejected the saved session on startup")
         }
 }
 
@@ -929,9 +964,11 @@ private suspend fun webAuthStatus(refreshAccount: Boolean = false): AuthStatusDt
             .onSuccess { cacheWebAccount(it.toWebAccountDto()) }
             .onFailure { error ->
                 accountError = error.message ?: error::class.simpleName
-                if (error.isRejectedSession()) {
-                    degradeWebAuthSession()
-                    deletePersistedWebAuthSession()
+                // Only a real 401/403 means the cookie is dead. Anything else -- most often
+                // accountInfo() failing to parse a reply -- leaves the session alone: it stays
+                // usable for browse and playback, and survives a restart.
+                if (error.isConfirmedDeadSession()) {
+                    dropDeadWebAuthSession("YouTube rejected the session while reading the account")
                     loggedIn = false
                 }
             }
