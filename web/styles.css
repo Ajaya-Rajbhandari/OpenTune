@@ -1341,10 +1341,16 @@ h1 {
 
 .now-page-lyrics-overlay.fullscreen .lyrics-toolbar {
   justify-content: flex-end;
+  gap: 12px;
 }
 
+/*
+ * The mode buttons were hidden outright in fullscreen, so there was no way to change how the lyrics
+ * are shown without leaving it. They now reveal with the rest of the toolbar on hover or focus,
+ * exactly like the sync controls beside them.
+ */
 .now-page-lyrics-overlay.fullscreen .lyrics-mode-group {
-  display: none;
+  display: flex;
 }
 
 .now-page-lyrics-overlay header,
