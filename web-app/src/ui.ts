@@ -1,16 +1,25 @@
-import { clearAuthSession, loadAuthStatus, loadBrowseData, loadDetail, loadExploreData, loadHomeData, loadLibraryItems, loadLyrics, loadNextQueue, saveAuthSession, searchSongs, searchSuggestions, setRemoteLike } from "./api";
+import { clearAuthSession, loadAuthPairingStatus, loadAuthStatus, loadBrowseData, loadDetail, loadExploreData, loadHomeData, loadLibraryItems, loadLyrics, loadNextQueue, playerMetadata, saveAuthSession, searchSongs, searchSuggestions, setRemoteLike, startAuthPairing } from "./api";
 import { demoTracks, moods } from "./demo";
 import { AudioPlayer } from "./player";
-import type { AppState, AuthStatusDto, Route, Track } from "./types";
+import type { AppState, AuthStatusDto, LyricsCalibration, Route, Track } from "./types";
 
 const storageKey = "opentune-web-app-state";
+const lyricsOffsetStepMs = 500;
+const lyricsOffsetLimitMs = 60_000;
+const lyricsLeadMs = 300;
+const lyricsCalibrationMinGapMs = 20_000;
+const lyricsCalibrationMinLyricGapMs = 10_000;
+const lyricsCalibrationMinRate = 0.92;
+const lyricsCalibrationMaxRate = 1.08;
 let tracks: Track[] = demoTracks.map((track) => ({ ...track }));
 let searchTimer = 0;
+let lyricsAnimationFrame = 0;
 let routeBeforeNow: Route = "home";
 let lastRoute: Route = "home";
 let isHistoryNavigation = false;
 let extensionAuthRequestId = "";
 let extensionAuthMissingTimer = 0;
+let androidPairingPollTimer = 0;
 const extensionFolderPath = "web-extension/";
 const browserHelperInstallUrl = import.meta.env.VITE_OPENTUNE_HELPER_INSTALL_URL?.trim() || "";
 const suppressedFavoriteIds = new Set<string>();
@@ -59,7 +68,9 @@ const state: AppState = {
   nowQueueOpen: false,
   lyricsFullscreen: false,
   lyricsMode: "focus",
-  lyricsOffset: 0,
+  lyricsOffsetMs: 0,
+  lyricsOffsetsMs: {},
+  lyricsCalibrations: {},
   auth: {
     status: "idle",
     loggedIn: false,
@@ -72,6 +83,9 @@ const state: AppState = {
   accountOpen: false,
   accountSaving: false,
   accountError: "",
+  androidPairingPending: false,
+  androidPairingCode: "",
+  androidPairingExpiresAt: 0,
   extensionLoginPending: false,
   extensionLoginStarted: false,
   extensionInstallVisible: false,
@@ -81,7 +95,13 @@ const player = new AudioPlayer(
   (patch) => {
     if (patch.trackId && patch.trackId !== state.currentTrackId) return;
     if (patch.position !== undefined) state.position = patch.position;
-    if (patch.duration !== undefined) currentTrack().duration = patch.duration;
+    if (patch.duration !== undefined) {
+      const track = currentTrack();
+      track.duration = patch.duration;
+      if (track.lyricsStatus === "ready" && track.lyricsMatchDuration !== patch.duration) {
+        void loadLyricsForTrack(track.id, true);
+      }
+    }
     if (patch.isPlaying !== undefined) {
       state.isPlaying = patch.isPlaying;
       if (patch.isPlaying) state.playbackError = "";
@@ -202,7 +222,9 @@ function saveState(): void {
     repeatMode: state.repeatMode,
     playerPage: state.playerPage,
     lyricsMode: state.lyricsMode,
-    lyricsOffset: state.lyricsOffset,
+    lyricsOffsetMs: state.lyricsOffsetMs,
+    lyricsOffsetsMs: state.lyricsOffsetsMs,
+    lyricsCalibrations: state.lyricsCalibrations,
     favorites: Array.from(state.favorites),
     downloaded: Array.from(state.downloaded),
   }));
@@ -224,10 +246,181 @@ function loadState(): void {
     state.repeatMode = saved.repeatMode === "one" || saved.repeatMode === "all" ? saved.repeatMode : saved.repeat ? "all" : "off";
     if (["lyrics", "queue"].includes(saved.playerPage)) state.playerPage = saved.playerPage;
     if (["focus", "full", "compact"].includes(saved.lyricsMode)) state.lyricsMode = saved.lyricsMode;
-    if (typeof saved.lyricsOffset === "number") state.lyricsOffset = Math.max(-10, Math.min(10, saved.lyricsOffset));
+    if (typeof saved.lyricsOffsetMs === "number") {
+      state.lyricsOffsetMs = clampLyricsOffsetMs(saved.lyricsOffsetMs);
+    } else if (typeof saved.lyricsOffset === "number") {
+      state.lyricsOffsetMs = clampLyricsOffsetMs(Math.round(saved.lyricsOffset * 1000));
+    }
+    if (saved.lyricsOffsetsMs && typeof saved.lyricsOffsetsMs === "object" && !Array.isArray(saved.lyricsOffsetsMs)) {
+      state.lyricsOffsetsMs = Object.fromEntries(
+        Object.entries(saved.lyricsOffsetsMs)
+          .filter(([trackId, offsetMs]) => trackId && typeof offsetMs === "number")
+          .map(([trackId, offsetMs]) => [trackId, clampLyricsOffsetMs(offsetMs as number)]),
+      );
+    }
+    if (saved.lyricsCalibrations && typeof saved.lyricsCalibrations === "object" && !Array.isArray(saved.lyricsCalibrations)) {
+      state.lyricsCalibrations = Object.fromEntries(
+        Object.entries(saved.lyricsCalibrations)
+          .map(([trackId, calibration]) => [trackId, parseLyricsCalibration(calibration)] as const)
+          .filter((entry): entry is [string, LyricsCalibration] => Boolean(entry[0] && entry[1])),
+      );
+    }
   } catch {
     localStorage.removeItem(storageKey);
   }
+}
+
+function parseLyricsCalibration(value: unknown): LyricsCalibration | null {
+  if (!value || typeof value !== "object") return null;
+  const candidate = value as Partial<LyricsCalibration>;
+  if (
+    typeof candidate.anchorPlaybackMs !== "number" ||
+    typeof candidate.anchorLyricMs !== "number" ||
+    typeof candidate.rate !== "number" ||
+    typeof candidate.lastPlaybackMs !== "number" ||
+    typeof candidate.lastLyricMs !== "number"
+  ) return null;
+
+  const rate = clampLyricsRate(candidate.rate);
+  return {
+    anchorPlaybackMs: Math.max(0, Math.round(candidate.anchorPlaybackMs)),
+    anchorLyricMs: Math.max(0, Math.round(candidate.anchorLyricMs)),
+    rate,
+    lastPlaybackMs: Math.max(0, Math.round(candidate.lastPlaybackMs)),
+    lastLyricMs: Math.max(0, Math.round(candidate.lastLyricMs)),
+  };
+}
+
+function clampLyricsOffsetMs(offsetMs: number): number {
+  return Math.max(-lyricsOffsetLimitMs, Math.min(lyricsOffsetLimitMs, Math.round(offsetMs)));
+}
+
+function clampLyricsRate(rate: number): number {
+  if (!Number.isFinite(rate)) return 1;
+  return Math.max(lyricsCalibrationMinRate, Math.min(lyricsCalibrationMaxRate, rate));
+}
+
+function syncedLyricsPosition(): number {
+  return Math.max(0, calibratedLyricsPositionSeconds(playbackPositionSeconds()));
+}
+
+function playbackPositionSeconds(): number {
+  const track = currentTrack();
+  if (player.isRemoteTrack(track) && Number.isFinite(player.audio.currentTime)) return player.audio.currentTime || 0;
+  return state.position;
+}
+
+function formatLyricsOffset(offsetMs: number): string {
+  const seconds = offsetMs / 1000;
+  return `${seconds > 0 ? "+" : ""}${seconds.toFixed(1)}s`;
+}
+
+function formatLyricsRate(rate: number): string {
+  const percent = Math.round((rate - 1) * 1000) / 10;
+  if (Math.abs(percent) < 0.1) return "normal speed";
+  return `${percent > 0 ? "+" : ""}${percent.toFixed(1)}%`;
+}
+
+function formatLyricsSyncLabel(): string {
+  const calibration = currentLyricsCalibration();
+  if (!calibration) return formatLyricsOffset(currentLyricsOffsetMs());
+  const rateLabel = formatLyricsRate(calibration.rate);
+  return rateLabel === "normal speed" ? formatLyricsOffset(currentLyricsOffsetMs()) : `${formatLyricsOffset(currentLyricsOffsetMs())} ${rateLabel}`;
+}
+
+function currentLyricsOffsetMs(): number {
+  const calibration = currentLyricsCalibration();
+  if (calibration) return Math.round(calibratedLyricsPositionSeconds(playbackPositionSeconds()) * 1000 - playbackPositionSeconds() * 1000 - lyricsLeadMs);
+
+  const trackId = state.currentTrackId;
+  if (trackId && Object.prototype.hasOwnProperty.call(state.lyricsOffsetsMs, trackId)) {
+    return clampLyricsOffsetMs(state.lyricsOffsetsMs[trackId]);
+  }
+  return clampLyricsOffsetMs(state.lyricsOffsetMs);
+}
+
+function setCurrentLyricsOffsetMs(offsetMs: number): void {
+  const clamped = clampLyricsOffsetMs(offsetMs);
+  if (state.currentTrackId) {
+    delete state.lyricsCalibrations[state.currentTrackId];
+    state.lyricsOffsetsMs = { ...state.lyricsOffsetsMs, [state.currentTrackId]: clamped };
+  } else {
+    state.lyricsOffsetMs = clamped;
+  }
+}
+
+function setCurrentLyricsCalibration(playbackMs: number, lyricMs: number, rate = 1): void {
+  if (!state.currentTrackId) {
+    setCurrentLyricsOffsetMs(lyricMs - playbackMs);
+    return;
+  }
+
+  const calibration: LyricsCalibration = {
+    anchorPlaybackMs: Math.max(0, Math.round(playbackMs)),
+    anchorLyricMs: Math.max(0, Math.round(lyricMs)),
+    rate: clampLyricsRate(rate),
+    lastPlaybackMs: Math.max(0, Math.round(playbackMs)),
+    lastLyricMs: Math.max(0, Math.round(lyricMs)),
+  };
+  state.lyricsCalibrations = { ...state.lyricsCalibrations, [state.currentTrackId]: calibration };
+  state.lyricsOffsetsMs = { ...state.lyricsOffsetsMs, [state.currentTrackId]: clampLyricsOffsetMs(lyricMs - playbackMs) };
+}
+
+function shiftCurrentLyricsSync(deltaMs: number): void {
+  const calibration = currentLyricsCalibration();
+  if (!calibration || !state.currentTrackId) {
+    setCurrentLyricsOffsetMs(currentLyricsOffsetMs() + deltaMs);
+    return;
+  }
+
+  const nextOffsetMs = clampLyricsOffsetMs(currentLyricsOffsetMs() + deltaMs);
+  state.lyricsCalibrations = {
+    ...state.lyricsCalibrations,
+    [state.currentTrackId]: {
+      ...calibration,
+      anchorLyricMs: Math.max(0, calibration.anchorLyricMs + deltaMs),
+      lastLyricMs: Math.max(0, calibration.lastLyricMs + deltaMs),
+    },
+  };
+  state.lyricsOffsetsMs = { ...state.lyricsOffsetsMs, [state.currentTrackId]: nextOffsetMs };
+}
+
+function resetCurrentLyricsSync(): void {
+  if (state.currentTrackId) {
+    delete state.lyricsCalibrations[state.currentTrackId];
+  }
+  setCurrentLyricsOffsetMs(0);
+}
+
+function currentLyricsCalibration(): LyricsCalibration | null {
+  const trackId = state.currentTrackId;
+  if (!trackId) return null;
+  return state.lyricsCalibrations[trackId] || null;
+}
+
+function calibratedLyricsPositionSeconds(playbackSeconds: number): number {
+  const calibration = currentLyricsCalibration();
+  const playbackMs = playbackSeconds * 1000 + lyricsLeadMs;
+  if (!calibration) return playbackSeconds + (fallbackLyricsOffsetMs() + lyricsLeadMs) / 1000;
+  return (calibration.anchorLyricMs + (playbackMs - calibration.anchorPlaybackMs) * calibration.rate) / 1000;
+}
+
+function fallbackLyricsOffsetMs(): number {
+  const trackId = state.currentTrackId;
+  if (trackId && Object.prototype.hasOwnProperty.call(state.lyricsOffsetsMs, trackId)) {
+    return clampLyricsOffsetMs(state.lyricsOffsetsMs[trackId]);
+  }
+  return clampLyricsOffsetMs(state.lyricsOffsetMs);
+}
+
+function lyricsTimingMode(track: Track): "unsynced" | "line" | "calibrated" {
+  if (track.lyricsSynced === false || !track.lyrics.length) return "unsynced";
+  const calibration = currentLyricsCalibration();
+  return calibration && hasLyricsDriftCalibration(calibration) ? "calibrated" : "line";
+}
+
+function hasLyricsDriftCalibration(calibration: LyricsCalibration): boolean {
+  return Math.abs(calibration.lastPlaybackMs - calibration.anchorPlaybackMs) >= lyricsCalibrationMinGapMs;
 }
 
 async function loadHome(): Promise<void> {
@@ -470,6 +663,14 @@ function renderAccount(): void {
   qs<HTMLElement>("#accountManualDivider").hidden = state.auth.loggedIn;
   qs<HTMLElement>("#accountManualFields").hidden = state.auth.loggedIn;
   qs<HTMLButtonElement>("#saveAuthButton").hidden = state.auth.loggedIn;
+  qs<HTMLButtonElement>("#androidPairingButton").disabled = state.androidPairingPending || state.accountSaving;
+  qs<HTMLElement>("#androidPairingDetails").hidden = !state.androidPairingCode;
+  qs<HTMLAnchorElement>("#androidPairingLink").href = androidPairingDeepLink();
+  setText("#androidPairingButton", state.androidPairingPending ? "Waiting..." : state.androidPairingCode ? "New code" : "Generate code");
+  setText("#androidPairingCode", state.androidPairingCode || "--------");
+  setText("#androidPairingServer", window.location.origin);
+  setText("#androidPairingText", androidPairingText());
+  setText("#androidPairingHelp", androidPairingHelpText());
   if (state.accountSaving) {
     setText("#accountStatusTitle", "Saving session...");
     setText("#accountStatusText", "Applying these values to the local OpenTune API.");
@@ -500,16 +701,48 @@ function renderAccount(): void {
   setText("#extensionInstallFallback", `Developer build: set VITE_OPENTUNE_HELPER_INSTALL_URL to the store URL, or load ${extensionFolderPath} manually.`);
 }
 
+function androidPairingText(): string {
+  if (state.androidPairingPending) return "Waiting for Android to send your saved YouTube Music login.";
+  if (state.androidPairingCode) return "Open OpenTune Android and enter this pairing code before it expires.";
+  return "Already logged in on Android? Generate a short-lived code and send this login to OpenTune Web.";
+}
+
+function androidPairingHelpText(): string {
+  if (isLoopbackOrigin()) return "This page is using localhost. For phone pairing, open OpenTune Web with your computer's LAN IP, then generate a new code.";
+  return "Open OpenTune on Android, then go to Account > Pair with OpenTune Web. You can also open the Android link below.";
+}
+
+function isLoopbackOrigin(): boolean {
+  return window.location.hostname === "localhost" || window.location.hostname === "127.0.0.1";
+}
+
+function androidPairingDeepLink(): string {
+  const params = new URLSearchParams({
+    server: window.location.origin,
+    code: state.androidPairingCode,
+  });
+  return `opentune://web-pair?${params}`;
+}
+
 function extensionLoginButtonText(): string {
   if (state.extensionLoginPending) return "Waiting for login...";
   if (state.extensionInstallVisible) return browserHelperInstallUrl ? "Install browser helper" : "Retry after installing";
   return state.auth.loggedIn ? "Refresh YouTube Music login" : "Login with YouTube Music";
 }
 
+// The helper only auto-injects on loopback. On a LAN origin it is installed but idle until
+// the user grants this origin from the toolbar icon, so "install it" would be wrong advice.
+function helperUnreachableMessage(): string {
+  if (!isLoopbackOrigin()) {
+    return "If the helper is already installed, click its toolbar icon to allow it on this address, then retry login.";
+  }
+  return "Install the OpenTune Login Helper extension, then retry login.";
+}
+
 function extensionLoginText(): string {
   if (state.extensionLoginPending && state.extensionLoginStarted) return "Complete Google login in the YouTube Music tab. OpenTune will update when the session is captured.";
   if (state.extensionLoginPending) return "Looking for the OpenTune Login Helper extension...";
-  if (state.extensionInstallVisible) return browserHelperInstallUrl ? "Install the browser helper, then return here to retry login." : "Install the helper once, then retry login here.";
+  if (state.extensionInstallVisible) return helperUnreachableMessage();
   if (state.auth.loggedIn) return "Your YouTube Music session is already saved. Use this only if playback or browse starts failing.";
   return "Use the OpenTune Login Helper extension to open Google login and capture the YouTube Music session automatically.";
 }
@@ -543,7 +776,81 @@ function closeAccountSheet(): void {
   state.accountOpen = false;
   state.accountError = "";
   state.extensionInstallVisible = false;
+  clearAndroidPairing();
   renderAccount();
+}
+
+async function startAndroidPairing(): Promise<void> {
+  state.accountError = "";
+  state.androidPairingPending = true;
+  state.androidPairingCode = "";
+  state.androidPairingExpiresAt = 0;
+  window.clearTimeout(androidPairingPollTimer);
+  renderAccount();
+
+  try {
+    const pairing = await startAuthPairing();
+    state.androidPairingCode = pairing.code;
+    state.androidPairingExpiresAt = pairing.expiresAt;
+    showToast("Pairing code ready");
+    pollAndroidPairing();
+  } catch (error) {
+    state.androidPairingPending = false;
+    state.accountError = error instanceof Error ? error.message : "Could not start Android pairing";
+  }
+  renderAccount();
+}
+
+async function pollAndroidPairing(): Promise<void> {
+  if (!state.androidPairingPending || !state.androidPairingCode) return;
+
+  try {
+    const status = await loadAuthPairingStatus(state.androidPairingCode);
+    if (status.state === "paired" && status.auth) {
+      clearAndroidPairing();
+      applyAuthStatus(status.auth);
+      clearDemoPlayback();
+      clearAccountInputs();
+      resetHomeFeed();
+      void loadHome();
+      if (state.auth.loggedIn) void preloadSidebarLibrary();
+      showToast("Android login paired");
+      if (state.auth.loggedIn) state.accountOpen = false;
+      renderAccount();
+      return;
+    }
+
+    if (status.state === "expired" || status.state === "missing" || Date.now() > state.androidPairingExpiresAt) {
+      clearAndroidPairing();
+      state.accountError = "Android pairing code expired. Generate a new code.";
+      renderAccount();
+      return;
+    }
+  } catch (error) {
+    clearAndroidPairing();
+    state.accountError = error instanceof Error ? error.message : "Android pairing failed";
+    renderAccount();
+    return;
+  }
+
+  androidPairingPollTimer = window.setTimeout(() => void pollAndroidPairing(), 2000);
+}
+
+function clearAndroidPairing(): void {
+  window.clearTimeout(androidPairingPollTimer);
+  state.androidPairingPending = false;
+  state.androidPairingCode = "";
+  state.androidPairingExpiresAt = 0;
+}
+
+async function copyAndroidPairingLink(): Promise<void> {
+  if (!state.androidPairingCode) return;
+  try {
+    await navigator.clipboard.writeText(androidPairingDeepLink());
+    showToast("Android pairing link copied");
+  } catch {
+    showToast("Could not copy pairing link");
+  }
 }
 
 function requestExtensionLogin(): void {
@@ -557,7 +864,7 @@ function requestExtensionLogin(): void {
     if (!state.extensionLoginPending || state.extensionLoginStarted) return;
     state.extensionLoginPending = false;
     state.extensionInstallVisible = true;
-    state.accountError = "Install the OpenTune Login Helper extension, then retry login.";
+    state.accountError = helperUnreachableMessage();
     renderAccount();
   }, 1800);
   renderAccount();
@@ -1278,13 +1585,16 @@ function renderPlayer(): void {
   setText("#sheetCurrentTime", formatTime(state.position));
   setText("#barCurrentTime", formatTime(state.position));
   setText("#nowPageCurrentTime", formatTime(state.position));
+  setText("#lyricsCurrentTime", formatTime(state.position));
   setText("#sheetDuration", duration ? formatTime(duration) : "--:--");
   setText("#barDuration", duration ? formatTime(duration) : "--:--");
   setText("#nowPageDuration", duration ? formatTime(duration) : "--:--");
+  setText("#lyricsDuration", duration ? formatTime(duration) : "--:--");
   qs<HTMLInputElement>("#sheetProgress").value = String(Math.round(progress * 1000));
   qs<HTMLInputElement>("#barProgress").value = String(Math.round(progress * 1000));
   qs<HTMLInputElement>("#nowPageProgress").value = String(Math.round(progress * 1000));
-  ["#miniPlayButton", "#sheetPlayButton", "#nowPagePlayButton"].forEach((selector) => {
+  qs<HTMLInputElement>("#lyricsProgress").value = String(Math.round(progress * 1000));
+  ["#miniPlayButton", "#sheetPlayButton", "#nowPagePlayButton", "#lyricsPlayButton"].forEach((selector) => {
     const button = qs<HTMLButtonElement>(selector);
     button.innerHTML = playIcon(isLoading);
     button.disabled = isLoading || isEmpty;
@@ -1301,17 +1611,18 @@ function renderPlayer(): void {
     button.setAttribute("aria-label", liked ? "Remove from liked songs" : "Add to liked songs");
     button.setAttribute("aria-pressed", String(liked));
   });
-  qsa<HTMLButtonElement>("#barShuffleButton, #sheetShuffleButton, #nowPageShuffleButton").forEach((button) => {
+  qsa<HTMLButtonElement>("#barShuffleButton, #sheetShuffleButton, #nowPageShuffleButton, #lyricsShuffleButton").forEach((button) => {
     button.classList.toggle("active", state.shuffle);
     button.setAttribute("aria-label", state.shuffle ? "Shuffle on" : "Shuffle off");
   });
-  qsa<HTMLButtonElement>("#barRepeatButton, #sheetRepeatButton, #nowPageRepeatButton").forEach((button) => {
+  qsa<HTMLButtonElement>("#barRepeatButton, #sheetRepeatButton, #nowPageRepeatButton, #lyricsRepeatButton").forEach((button) => {
     button.classList.toggle("active", state.repeatMode !== "off");
     button.dataset.mode = state.repeatMode;
     button.setAttribute("aria-label", state.repeatMode === "one" ? "Repeat one" : state.repeatMode === "all" ? "Repeat all" : "Repeat off");
   });
   qs<HTMLElement>("#nowPageLyricsOverlay").classList.toggle("active", state.nowLyricsOpen);
   qs<HTMLElement>("#nowPageLyricsOverlay").dataset.mode = state.lyricsMode;
+  qs<HTMLElement>("#nowPageLyricsOverlay").dataset.timing = lyricsTimingMode(track);
   qs("#nowPageLyricsOverlay").setAttribute("aria-hidden", String(!state.nowLyricsOpen));
   qs<HTMLElement>("#nowPageLyricsButton").classList.toggle("active", state.nowLyricsOpen);
   qs("#nowPageLyricsButton").setAttribute("aria-expanded", String(state.nowLyricsOpen));
@@ -1324,11 +1635,39 @@ function renderPlayer(): void {
   lyricsFullscreenButton.setAttribute("aria-label", state.lyricsFullscreen ? "Shrink lyrics" : "Expand lyrics");
   lyricsFullscreenButton.setAttribute("aria-expanded", String(state.lyricsFullscreen));
   qsa<HTMLElement>("[data-lyrics-mode]").forEach((button) => button.classList.toggle("active", button.getAttribute("data-lyrics-mode") === state.lyricsMode));
-  setText("#lyricsOffsetLabel", `${state.lyricsOffset >= 0 ? "+" : ""}${state.lyricsOffset.toFixed(1)}s`);
+  const lyricsOffsetLabel = qs<HTMLElement>("#lyricsOffsetLabel");
+  lyricsOffsetLabel.textContent = formatLyricsSyncLabel();
+  lyricsOffsetLabel.setAttribute("role", "button");
+  lyricsOffsetLabel.setAttribute("tabindex", "0");
+  lyricsOffsetLabel.title = "Reset lyrics sync offset";
+  lyricsOffsetLabel.setAttribute("aria-label", "Reset lyrics sync offset");
   renderLyrics();
   renderQueue();
   renderRightRail();
   updateMediaSession(track);
+}
+
+function ensureLyricsOffsetControls(): void {
+  const controls = document.querySelector<HTMLElement>(".lyrics-offset-controls");
+  if (!controls || controls.querySelector("#lyricsOffsetBackLargeButton")) return;
+
+  const backButton = qs<HTMLElement>("#lyricsOffsetBackButton");
+  const forwardButton = qs<HTMLElement>("#lyricsOffsetForwardButton");
+  const backLarge = document.createElement("button");
+  const forwardLarge = document.createElement("button");
+
+  backLarge.type = "button";
+  backLarge.id = "lyricsOffsetBackLargeButton";
+  backLarge.textContent = "-5s";
+  backLarge.setAttribute("aria-label", "Move lyrics 5 seconds earlier");
+
+  forwardLarge.type = "button";
+  forwardLarge.id = "lyricsOffsetForwardLargeButton";
+  forwardLarge.textContent = "+5s";
+  forwardLarge.setAttribute("aria-label", "Move lyrics 5 seconds later");
+
+  controls.insertBefore(backLarge, backButton);
+  controls.insertBefore(forwardLarge, forwardButton.nextSibling);
 }
 
 function setText(selector: string, text: string): void {
@@ -1369,24 +1708,28 @@ function renderLyrics(): void {
   if (player.isRemoteTrack(track) && !track.lyricsStatus && !track.lyrics.length) {
     void loadLyricsForTrack(track.id);
     lyricContainers.forEach((container) => renderMessage(container, "Loading lyrics..."));
+    stopLyricsAnimation();
     return;
   }
 
   if (track.lyricsStatus === "loading") {
     lyricContainers.forEach((container) => renderMessage(container, "Loading lyrics..."));
+    stopLyricsAnimation();
     return;
   }
 
   if (track.lyricsStatus === "error") {
     lyricContainers.forEach((container) => renderMessage(container, track.lyricsError || "Lyrics unavailable"));
+    stopLyricsAnimation();
     return;
   }
 
   if (!track.lyrics.length) {
     lyricContainers.forEach((container) => renderMessage(container, "Lyrics unavailable"));
+    stopLyricsAnimation();
     return;
   }
-  const adjustedPosition = state.position + state.lyricsOffset;
+  const adjustedPosition = syncedLyricsPosition();
   const activeIndex = activeLyricIndex(track);
   const createLine = ({ time, text, index }: { time: number; text: string; index: number }) => {
     const line = document.createElement("p");
@@ -1395,6 +1738,17 @@ function renderLyrics(): void {
     const distance = Math.abs(index - activeIndex);
     line.className = `lyric-line${isActive ? " active" : ""}${track.lyricsSynced && distance > 2 ? " far" : ""}`;
     line.dataset.index = String(index);
+    if (track.lyricsSynced !== false && time >= 0) {
+      line.tabIndex = 0;
+      line.setAttribute("role", "button");
+      line.setAttribute("aria-label", `Sync this lyric line to the current playback time: ${text}`);
+      line.addEventListener("click", () => syncLyricsLineToPlayback(time));
+      line.addEventListener("keydown", (event) => {
+        if (event.key !== "Enter" && event.key !== " ") return;
+        event.preventDefault();
+        syncLyricsLineToPlayback(time);
+      });
+    }
     setLyricTiming(line, time, next, adjustedPosition, isActive);
     line.textContent = text;
     return line;
@@ -1410,6 +1764,7 @@ function renderLyrics(): void {
       overlayLyrics.querySelector(".lyric-line.active")?.scrollIntoView({ block: "center", behavior: "smooth" });
     });
   }
+  startLyricsAnimation();
 }
 
 function setLyricTiming(line: HTMLElement, start: number, next: number, position: number, active: boolean): void {
@@ -1417,13 +1772,83 @@ function setLyricTiming(line: HTMLElement, start: number, next: number, position
   const safeNext = next > safeStart ? next : safeStart + 2.8;
   const duration = Math.max(0.8, safeNext - safeStart);
   const elapsed = active ? Math.max(0, Math.min(duration, position - safeStart)) : 0;
-  const progress = duration ? Math.max(0, Math.min(1, elapsed / duration)) : 0;
-  const remaining = active ? Math.max(0.18, duration - elapsed) : duration;
+  const timingMode = qs<HTMLElement>("#nowPageLyricsOverlay").dataset.timing;
+  const progress = active && timingMode === "calibrated" && duration ? Math.max(0, Math.min(1, elapsed / duration)) : 0;
 
   line.style.setProperty("--lyric-duration", `${duration.toFixed(2)}s`);
-  line.style.setProperty("--lyric-remaining", `${remaining.toFixed(2)}s`);
   line.style.setProperty("--lyric-progress", `${(progress * 100).toFixed(2)}%`);
-  line.style.setProperty("--lyric-progress-start", `${(progress * 100).toFixed(2)}%`);
+}
+
+function syncLyricsLineToPlayback(lineStartSeconds: number): void {
+  if (lineStartSeconds < 0) return;
+  const trackId = state.currentTrackId;
+  const playbackMs = Math.round(playbackPositionSeconds() * 1000 + lyricsLeadMs);
+  const lyricMs = Math.round(lineStartSeconds * 1000);
+  const previous = currentLyricsCalibration();
+
+  if (trackId && previous) {
+    const playbackGapMs = playbackMs - previous.lastPlaybackMs;
+    const lyricGapMs = lyricMs - previous.lastLyricMs;
+    const canCalibrateDrift = Math.abs(playbackGapMs) >= lyricsCalibrationMinGapMs && Math.abs(lyricGapMs) >= lyricsCalibrationMinLyricGapMs;
+    const nextRate = canCalibrateDrift ? lyricGapMs / playbackGapMs : 1;
+
+    if (canCalibrateDrift && nextRate >= lyricsCalibrationMinRate && nextRate <= lyricsCalibrationMaxRate) {
+      state.lyricsCalibrations = {
+        ...state.lyricsCalibrations,
+        [trackId]: {
+          anchorPlaybackMs: previous.lastPlaybackMs,
+          anchorLyricMs: previous.lastLyricMs,
+          rate: nextRate,
+          lastPlaybackMs: playbackMs,
+          lastLyricMs: lyricMs,
+        },
+      };
+      renderPlayer();
+      saveState();
+      showToast(`Lyrics speed calibrated ${formatLyricsRate(nextRate)}`);
+      return;
+    }
+  }
+
+  setCurrentLyricsCalibration(playbackMs, lyricMs);
+  renderPlayer();
+  saveState();
+  showToast(`Lyrics sync set to ${formatLyricsSyncLabel()}`);
+}
+
+function startLyricsAnimation(): void {
+  if (lyricsAnimationFrame || !shouldAnimateLyrics()) return;
+  lyricsAnimationFrame = window.requestAnimationFrame(updateLyricsAnimation);
+}
+
+function stopLyricsAnimation(): void {
+  if (!lyricsAnimationFrame) return;
+  window.cancelAnimationFrame(lyricsAnimationFrame);
+  lyricsAnimationFrame = 0;
+}
+
+function shouldAnimateLyrics(): boolean {
+  const track = currentTrack();
+  return state.nowLyricsOpen && state.isPlaying && track.lyricsSynced !== false && track.lyrics.length > 0;
+}
+
+function updateLyricsAnimation(): void {
+  lyricsAnimationFrame = 0;
+  if (!shouldAnimateLyrics()) return;
+
+  const track = currentTrack();
+  const activeIndex = activeLyricIndex(track);
+  const activeEntry = track.lyrics[activeIndex];
+  const activeLine = qs<HTMLElement>("#nowPageOverlayLyrics").querySelector<HTMLElement>(`.lyric-line[data-index="${activeIndex}"]`);
+
+  if (!activeEntry || !activeLine?.classList.contains("active")) {
+    renderLyrics();
+    return;
+  } else {
+    setLyricTiming(activeLine, activeEntry[0], track.lyrics[activeIndex + 1]?.[0] ?? track.duration + 1, syncedLyricsPosition(), true);
+  }
+
+  lyricsAnimationFrame = window.requestAnimationFrame(updateLyricsAnimation);
 }
 
 function visibleLyricWindow(track: Track, mode: AppState["lyricsMode"]): Array<{ time: number; text: string; index: number }> {
@@ -1443,7 +1868,7 @@ function indexedLyrics(track: Track): Array<{ time: number; text: string; index:
 
 function activeLyricIndex(track: Track): number {
   let activeIndex = -1;
-  const adjustedPosition = state.position + state.lyricsOffset;
+  const adjustedPosition = syncedLyricsPosition();
   track.lyrics.forEach(([time], index) => {
     if (time >= 0 && time <= adjustedPosition) activeIndex = index;
   });
@@ -1696,9 +2121,16 @@ function playTrack(trackId: string): void {
   }
 }
 
-async function loadLyricsForTrack(trackId: string): Promise<void> {
+async function loadLyricsForTrack(trackId: string, force = false): Promise<void> {
   const track = trackById(trackId);
-  if (track.lyrics.length || track.lyricsStatus === "loading" || track.lyricsStatus === "ready") return;
+  if (track.lyricsStatus === "loading") return;
+
+  await ensureTrackDuration(track);
+  if (state.currentTrackId !== trackId) return;
+
+  const matchDuration = track.duration || 0;
+  const hasCurrentLyrics = track.lyrics.length > 0 && track.lyricsStatus === "ready" && track.lyricsMatchDuration === matchDuration;
+  if (!force && hasCurrentLyrics) return;
 
   track.lyricsStatus = "loading";
   track.lyricsError = "";
@@ -1710,13 +2142,30 @@ async function loadLyricsForTrack(trackId: string): Promise<void> {
     const syncedLyrics = lyrics.synced ? lyrics.entries.map((entry) => [entry.time, entry.text] as [number, string]) : [];
     track.lyrics = syncedLyrics.length ? syncedLyrics : lyrics.lines.map((line) => [-1, line]);
     track.lyricsSynced = syncedLyrics.length > 0;
+    track.lyricsSource = lyrics.source;
+    track.lyricsMatchDuration = matchDuration;
     track.lyricsStatus = "ready";
+    console.info("OpenTune lyrics matched", {
+      trackId,
+      title: track.title,
+      artist: track.artist,
+      source: lyrics.source,
+      synced: track.lyricsSynced,
+      duration: matchDuration,
+    });
   } catch (error) {
     track.lyricsStatus = "error";
     track.lyricsError = error instanceof Error ? error.message : "Lyrics unavailable";
   }
 
   if (state.currentTrackId === trackId) renderLyrics();
+}
+
+async function ensureTrackDuration(track: Track): Promise<void> {
+  if (track.duration > 0 || !player.isRemoteTrack(track)) return;
+  const metadata = await playerMetadata(track.id);
+  if (metadata.durationSeconds) track.duration = metadata.durationSeconds;
+  if (metadata.thumbnail) track.thumbnail = metadata.thumbnail;
 }
 async function loadQueueForTrack(trackId: string): Promise<void> {
   const requestId = state.next.requestId + 1;
@@ -1849,11 +2298,14 @@ function updateMediaSession(track: Track): void {
 }
 
 function bindEvents(): void {
+  ensureLyricsOffsetControls();
   qs("#historyBackButton").addEventListener("click", () => navigateHistory("back"));
   qs("#historyForwardButton").addEventListener("click", () => navigateHistory("forward"));
   qs("#accountChip").addEventListener("click", openAccountSheet);
   qs("#accountCloseButton").addEventListener("click", closeAccountSheet);
   qs("#accountBackdrop").addEventListener("click", closeAccountSheet);
+  qs("#androidPairingButton").addEventListener("click", () => void startAndroidPairing());
+  qs("#copyAndroidPairingLinkButton").addEventListener("click", () => void copyAndroidPairingLink());
   qs("#extensionLoginButton").addEventListener("click", handleExtensionLoginClick);
   qs("#installExtensionButton").addEventListener("click", installBrowserHelper);
   qs("#retryExtensionLoginButton").addEventListener("click", requestExtensionLogin);
@@ -1908,11 +2360,11 @@ function bindEvents(): void {
   });
   qs("#nowPageCollapseButton").addEventListener("click", collapseNowPage);
   qsa<HTMLElement>("[data-close-player]").forEach((element) => element.addEventListener("click", closePlayer));
-  ["#miniPlayButton", "#sheetPlayButton", "#nowPagePlayButton"].forEach((selector) => qs(selector).addEventListener("click", togglePlay));
-  ["#miniNextButton", "#sheetNextButton", "#nowPageNextButton"].forEach((selector) => qs(selector).addEventListener("click", nextTrack));
-  ["#barPrevButton", "#sheetPrevButton", "#nowPagePrevButton"].forEach((selector) => qs(selector).addEventListener("click", previousTrack));
-  ["#barShuffleButton", "#sheetShuffleButton", "#nowPageShuffleButton"].forEach((selector) => qs(selector).addEventListener("click", toggleShuffle));
-  ["#barRepeatButton", "#sheetRepeatButton", "#nowPageRepeatButton"].forEach((selector) => qs(selector).addEventListener("click", cycleRepeatMode));
+  ["#miniPlayButton", "#sheetPlayButton", "#nowPagePlayButton", "#lyricsPlayButton"].forEach((selector) => qs(selector).addEventListener("click", togglePlay));
+  ["#miniNextButton", "#sheetNextButton", "#nowPageNextButton", "#lyricsNextButton"].forEach((selector) => qs(selector).addEventListener("click", nextTrack));
+  ["#barPrevButton", "#sheetPrevButton", "#nowPagePrevButton", "#lyricsPrevButton"].forEach((selector) => qs(selector).addEventListener("click", previousTrack));
+  ["#barShuffleButton", "#sheetShuffleButton", "#nowPageShuffleButton", "#lyricsShuffleButton"].forEach((selector) => qs(selector).addEventListener("click", toggleShuffle));
+  ["#barRepeatButton", "#sheetRepeatButton", "#nowPageRepeatButton", "#lyricsRepeatButton"].forEach((selector) => qs(selector).addEventListener("click", cycleRepeatMode));
   qs("#barQueueButton").addEventListener("click", openQueuePanel);
   ["#sheetFavoriteButton", "#sideFavoriteButton", "#nowPageFavoriteButton"].forEach((selector) => qs(selector).addEventListener("click", () => void toggleFavorite(state.currentTrackId)));
   ["#sideArtist", "#sheetArtist", "#nowPageArtist"].forEach((selector) => {
@@ -1930,7 +2382,7 @@ function bindEvents(): void {
       void openCurrentArtist();
     });
   });
-  ["#sheetProgress", "#barProgress", "#nowPageProgress"].forEach((selector) => qs<HTMLInputElement>(selector).addEventListener("input", (event) => seekToProgress((event.target as HTMLInputElement).value)));
+  ["#sheetProgress", "#barProgress", "#nowPageProgress", "#lyricsProgress"].forEach((selector) => qs<HTMLInputElement>(selector).addEventListener("input", (event) => seekToProgress((event.target as HTMLInputElement).value)));
   qs("#nowPageLyricsButton").addEventListener("click", () => {
     state.nowLyricsOpen = !state.nowLyricsOpen;
     state.nowQueueOpen = false;
@@ -1960,8 +2412,16 @@ function bindEvents(): void {
       renderPlayer();
     }
   }));
-  qs("#lyricsOffsetBackButton").addEventListener("click", () => adjustLyricsOffset(-0.5));
-  qs("#lyricsOffsetForwardButton").addEventListener("click", () => adjustLyricsOffset(0.5));
+  qs("#lyricsOffsetBackLargeButton").addEventListener("click", () => adjustLyricsOffset(-5000));
+  qs("#lyricsOffsetBackButton").addEventListener("click", () => adjustLyricsOffset(-lyricsOffsetStepMs));
+  qs("#lyricsOffsetForwardButton").addEventListener("click", () => adjustLyricsOffset(lyricsOffsetStepMs));
+  qs("#lyricsOffsetForwardLargeButton").addEventListener("click", () => adjustLyricsOffset(5000));
+  qs("#lyricsOffsetLabel").addEventListener("click", resetLyricsOffset);
+  qs("#lyricsOffsetLabel").addEventListener("keydown", (event) => {
+    if ((event as KeyboardEvent).key !== "Enter" && (event as KeyboardEvent).key !== " ") return;
+    event.preventDefault();
+    resetLyricsOffset();
+  });
   qsa<HTMLElement>(".player-page-button[data-player-page]").forEach((button) => button.addEventListener("click", () => {
     state.playerPage = button.dataset.playerPage === "queue" ? "queue" : "lyrics";
     renderSheetPages();
@@ -1987,10 +2447,17 @@ function bindEvents(): void {
   });
 }
 
-function adjustLyricsOffset(delta: number): void {
-  state.lyricsOffset = Math.max(-10, Math.min(10, Math.round((state.lyricsOffset + delta) * 10) / 10));
+function adjustLyricsOffset(deltaMs: number): void {
+  shiftCurrentLyricsSync(deltaMs);
   renderPlayer();
   saveState();
+}
+
+function resetLyricsOffset(): void {
+  resetCurrentLyricsSync();
+  renderPlayer();
+  saveState();
+  showToast("Lyrics sync reset");
 }
 
 function seekToProgress(value: string): void {

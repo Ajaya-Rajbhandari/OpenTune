@@ -90,6 +90,10 @@ import com.arturo254.opentune.ui.screens.settings.SettingsScreen
 import com.arturo254.opentune.ui.screens.settings.StorageSettings
 import com.arturo254.opentune.ui.screens.settings.ThemeCreatorScreen
 import com.arturo254.opentune.ui.screens.settings.UpdateScreen
+import com.arturo254.opentune.ui.screens.settings.WEB_PAIRING_CODE_ARGUMENT
+import com.arturo254.opentune.ui.screens.settings.WEB_PAIRING_ROUTE
+import com.arturo254.opentune.ui.screens.settings.WEB_PAIRING_SERVER_ARGUMENT
+import com.arturo254.opentune.ui.screens.settings.WebPairingScreen
 import com.arturo254.opentune.ui.screens.musicrecognition.MusicRecognitionRoute
 import com.arturo254.opentune.ui.screens.musicrecognition.MusicRecognitionScreen
 import com.arturo254.opentune.ui.screens.playlist.SpotifyPlaylistScreen
@@ -419,6 +423,28 @@ fun NavGraphBuilder.navigationBuilder(
     }
     composable("settings/po_token") {
         PoTokenScreen(navController, scrollBehavior)
+    }
+    composable(
+        route = "$WEB_PAIRING_ROUTE?$WEB_PAIRING_SERVER_ARGUMENT={$WEB_PAIRING_SERVER_ARGUMENT}&$WEB_PAIRING_CODE_ARGUMENT={$WEB_PAIRING_CODE_ARGUMENT}",
+        arguments = listOf(
+            navArgument(WEB_PAIRING_SERVER_ARGUMENT) {
+                type = NavType.StringType
+                nullable = true
+                defaultValue = null
+            },
+            navArgument(WEB_PAIRING_CODE_ARGUMENT) {
+                type = NavType.StringType
+                nullable = true
+                defaultValue = null
+            },
+        ),
+    ) { backStackEntry ->
+        WebPairingScreen(
+            navController = navController,
+            scrollBehavior = scrollBehavior,
+            initialServer = backStackEntry.arguments?.getString(WEB_PAIRING_SERVER_ARGUMENT)?.let(Uri::decode),
+            initialCode = backStackEntry.arguments?.getString(WEB_PAIRING_CODE_ARGUMENT)?.let(Uri::decode),
+        )
     }
     composable("customize_background") {
         CustomizeBackground(navController)

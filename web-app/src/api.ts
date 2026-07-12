@@ -10,6 +10,8 @@ import type {
   LibraryResponseDto,
   LyricsResponseDto,
   NextResponseDto,
+  PairingStartResponseDto,
+  PairingStatusResponseDto,
   PlayerResponseDto,
   SearchResultsDto,
   SearchSuggestionsDto,
@@ -58,6 +60,14 @@ export function saveAuthSession(session: AuthSessionRequestDto): Promise<AuthSta
 
 export function clearAuthSession(): Promise<AuthStatusDto> {
   return apiSend<AuthStatusDto>("/api/auth/session", { method: "DELETE" });
+}
+
+export function startAuthPairing(): Promise<PairingStartResponseDto> {
+  return apiSend<PairingStartResponseDto>("/api/auth/pairing/start", { method: "POST" });
+}
+
+export function loadAuthPairingStatus(code: string): Promise<PairingStatusResponseDto> {
+  return apiGet<PairingStatusResponseDto>("/api/auth/pairing/status", { code });
 }
 
 export function colorSetFromId(id: string): Pick<Track, "colorA" | "colorB" | "colorC"> {

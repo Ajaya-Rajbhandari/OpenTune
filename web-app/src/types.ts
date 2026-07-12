@@ -4,6 +4,14 @@ export type LoadStatus = "idle" | "loading" | "ready" | "error";
 
 export type LyricsLine = [number, string];
 
+export interface LyricsCalibration {
+  anchorPlaybackMs: number;
+  anchorLyricMs: number;
+  rate: number;
+  lastPlaybackMs: number;
+  lastLyricMs: number;
+}
+
 export interface Track {
   id: string;
   title: string;
@@ -25,6 +33,8 @@ export interface Track {
   lyricsStatus?: LoadStatus;
   lyricsError?: string;
   lyricsSynced?: boolean;
+  lyricsSource?: string;
+  lyricsMatchDuration?: number;
   artistId?: string;
   albumId?: string;
 }
@@ -68,6 +78,17 @@ export interface AuthSessionRequestDto {
   visitorData?: string;
   dataSyncId?: string;
   poToken?: string;
+}
+
+export interface PairingStartResponseDto {
+  code: string;
+  expiresAt: number;
+}
+
+export interface PairingStatusResponseDto {
+  state: "pending" | "paired" | "expired" | "missing";
+  expiresAt?: number;
+  auth?: AuthStatusDto;
 }
 
 export interface AuthUiState extends AuthStatusDto {
@@ -139,11 +160,16 @@ export interface AppState {
   nowQueueOpen: boolean;
   lyricsFullscreen: boolean;
   lyricsMode: "focus" | "full" | "compact";
-  lyricsOffset: number;
+  lyricsOffsetMs: number;
+  lyricsOffsetsMs: Record<string, number>;
+  lyricsCalibrations: Record<string, LyricsCalibration>;
   auth: AuthUiState;
   accountOpen: boolean;
   accountSaving: boolean;
   accountError: string;
+  androidPairingPending: boolean;
+  androidPairingCode: string;
+  androidPairingExpiresAt: number;
   extensionLoginPending: boolean;
   extensionLoginStarted: boolean;
   extensionInstallVisible: boolean;
