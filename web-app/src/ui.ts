@@ -9,6 +9,9 @@ const storageKey = "opentune-web-app-state";
 const MAX_HISTORY = 200;
 const lyricsOffsetStepMs = 500;
 const lyricsOffsetLimitMs = 60_000;
+
+/** Below this the two recordings are effectively the same cut and no correction is worth offering. */
+const lyricsIntroDriftMinSeconds = 4;
 const lyricsLeadMs = 300;
 const lyricsCalibrationMinGapMs = 20_000;
 const lyricsCalibrationMinLyricGapMs = 10_000;
@@ -301,6 +304,40 @@ function parseLyricsCalibration(value: unknown): LyricsCalibration | null {
     lastPlaybackMs: Math.max(0, Math.round(candidate.lastPlaybackMs)),
     lastLyricMs: Math.max(0, Math.round(candidate.lastLyricMs)),
   };
+}
+
+/**
+ * Offers the intro correction, but only while it would actually change anything.
+ *
+ * Applying it automatically would be wrong: the extra runtime is only *probably* an intro, and it
+ * could as easily be an outro, in which case shifting the lyrics makes them worse. So suggest, and
+ * let the ear decide.
+ */
+function renderLyricsAlignButton(): void {
+  const button = qs<HTMLButtonElement>("#lyricsAlignButton");
+  const track = currentTrack();
+  const driftMs = track.lyricsIntroDriftMs;
+  const alreadyAdjusted = Boolean(state.currentTrackId)
+    && (Object.prototype.hasOwnProperty.call(state.lyricsOffsetsMs, state.currentTrackId)
+      || Boolean(currentLyricsCalibration()));
+
+  if (!driftMs || alreadyAdjusted) {
+    button.hidden = true;
+    return;
+  }
+
+  button.hidden = false;
+  button.textContent = `Align ${formatLyricsOffset(driftMs)}`;
+  button.title = "These lyrics were timed against a shorter version of the song. This shifts them to match this video.";
+}
+
+function applyLyricsAlign(): void {
+  const driftMs = currentTrack().lyricsIntroDriftMs;
+  if (!driftMs) return;
+  setCurrentLyricsOffsetMs(driftMs);
+  showToast(`Lyrics shifted ${formatLyricsOffset(driftMs)}`);
+  render();
+  saveState();
 }
 
 function clampLyricsOffsetMs(offsetMs: number): number {
@@ -1683,6 +1720,8 @@ function renderPlayer(): void {
   lyricsFullscreenButton.setAttribute("aria-label", state.lyricsFullscreen ? "Shrink lyrics" : "Expand lyrics");
   lyricsFullscreenButton.setAttribute("aria-expanded", String(state.lyricsFullscreen));
   qsa<HTMLElement>("[data-lyrics-mode]").forEach((button) => button.classList.toggle("active", button.getAttribute("data-lyrics-mode") === state.lyricsMode));
+  renderLyricsAlignButton();
+
   const lyricsOffsetLabel = qs<HTMLElement>("#lyricsOffsetLabel");
   lyricsOffsetLabel.textContent = formatLyricsSyncLabel();
   lyricsOffsetLabel.setAttribute("role", "button");
@@ -2240,6 +2279,17 @@ async function loadLyricsForTrack(trackId: string, force = false): Promise<void>
     track.lyricsSynced = syncedLyrics.length > 0;
     track.lyricsSource = lyrics.source;
     track.lyricsMatchDuration = matchDuration;
+
+    // Lyric providers only accept a duration match within a couple of seconds, so lyrics for an
+    // official video with a long intro come from the album cut instead, and run ahead by roughly the
+    // length of that intro. Offer the difference as a correction rather than silently showing lyrics
+    // that are early; it is an estimate, since the extra runtime could also be an outro.
+    const lyricsDuration = lyrics.lyricsDurationSeconds ?? 0;
+    const drift = lyricsDuration > 0 && matchDuration > 0 ? matchDuration - lyricsDuration : 0;
+    track.lyricsIntroDriftMs = track.lyricsSynced && drift >= lyricsIntroDriftMinSeconds
+      ? clampLyricsOffsetMs(-drift * 1000)
+      : undefined;
+
     track.lyricsStatus = "ready";
     console.info("OpenTune lyrics matched", {
       trackId,
@@ -2593,6 +2643,7 @@ function bindEvents(): void {
   qs("#lyricsOffsetBackLargeButton").addEventListener("click", () => adjustLyricsOffset(-5000));
   qs("#lyricsOffsetBackButton").addEventListener("click", () => adjustLyricsOffset(-lyricsOffsetStepMs));
   qs("#lyricsOffsetForwardButton").addEventListener("click", () => adjustLyricsOffset(lyricsOffsetStepMs));
+  qs("#lyricsAlignButton").addEventListener("click", applyLyricsAlign);
   qs("#lyricsOffsetForwardLargeButton").addEventListener("click", () => adjustLyricsOffset(5000));
   qs("#lyricsOffsetLabel").addEventListener("click", resetLyricsOffset);
   qs("#lyricsOffsetLabel").addEventListener("keydown", (event) => {

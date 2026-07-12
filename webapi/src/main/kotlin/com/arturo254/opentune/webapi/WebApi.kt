@@ -1162,24 +1162,48 @@ private suspend fun resolveLyrics(
     // decoration like (Official Video) or [4K]. Searching for that verbatim finds nothing, which is
     // most of what "lyrics unavailable" actually meant. Try progressively tidier readings of the
     // same song before giving up, and also try without the duration, which providers match strictly.
-    for ((searchTitle, searchArtist) in lyricsSearchVariants(title, artist)) {
-        for (searchDuration in listOfNotNull(duration.takeIf { it > 0 }, -1).distinct()) {
-            LrcLib.getLyrics(
-                title = searchTitle,
-                artist = searchArtist,
-                duration = searchDuration,
-                album = null,
-            ).getOrNull()?.validLyricsOrNull()?.let { lyrics ->
-                return lyrics.toLyricsResponse(source = "lrclib", synced = lyrics.hasLrcTimestamps())
+    val variants = lyricsSearchVariants(title, artist)
+
+    // Pass one: matches the provider has verified against the duration, which it only accepts within
+    // a couple of seconds. A hit here is the same recording, so its timings line up as they are.
+    if (duration > 0) {
+        for ((searchTitle, searchArtist) in variants) {
+            LrcLib.getBestMatch(searchTitle, searchArtist, duration).getOrNull()?.let { match ->
+                match.text.validLyricsOrNull()?.let { lyrics ->
+                    return lyrics.toLyricsResponse(
+                        source = "lrclib",
+                        synced = lyrics.hasLrcTimestamps(),
+                        lyricsDurationSeconds = match.durationSeconds,
+                    )
+                }
             }
 
-            KuGou.getLyrics(
-                title = searchTitle,
-                artist = searchArtist,
-                duration = searchDuration,
-            ).getOrNull()?.validLyricsOrNull()?.let { lyrics ->
+            KuGou.getLyrics(searchTitle, searchArtist, duration).getOrNull()?.validLyricsOrNull()?.let { lyrics ->
                 return lyrics.toLyricsResponse(source = "kugou", synced = lyrics.hasLrcTimestamps())
             }
+        }
+    }
+
+    // Pass two: no duration constraint. This finds the right song but not necessarily the recording
+    // that is playing -- an album cut matched against an official video, say -- so the timings can be
+    // shifted by however much intro the video carries. Reporting the matched duration lets the client
+    // say so, and offer to correct it, rather than quietly showing lyrics that run early.
+    //
+    // This runs only after every duration-verified attempt has failed. Doing it per-variant would let
+    // an unconstrained match on a messy raw title beat a verified match on a cleaned one.
+    for ((searchTitle, searchArtist) in variants) {
+        LrcLib.getBestMatch(searchTitle, searchArtist, -1).getOrNull()?.let { match ->
+            match.text.validLyricsOrNull()?.let { lyrics ->
+                return lyrics.toLyricsResponse(
+                    source = "lrclib",
+                    synced = lyrics.hasLrcTimestamps(),
+                    lyricsDurationSeconds = match.durationSeconds,
+                )
+            }
+        }
+
+        KuGou.getLyrics(searchTitle, searchArtist, -1).getOrNull()?.validLyricsOrNull()?.let { lyrics ->
+            return lyrics.toLyricsResponse(source = "kugou", synced = lyrics.hasLrcTimestamps())
         }
     }
 
@@ -1190,7 +1214,11 @@ private suspend fun resolveLyrics(
     error("Lyrics unavailable")
 }
 
-private fun String.toLyricsResponse(source: String, synced: Boolean): LyricsResponseDto {
+private fun String.toLyricsResponse(
+    source: String,
+    synced: Boolean,
+    lyricsDurationSeconds: Int? = null,
+): LyricsResponseDto {
     val entries = parseLrcEntries()
     return LyricsResponseDto(
         source = source,
@@ -1200,6 +1228,7 @@ private fun String.toLyricsResponse(source: String, synced: Boolean): LyricsResp
             .map { it.stripLrcTimestamps().trim() }
             .filter { it.isNotBlank() },
         entries = entries,
+        lyricsDurationSeconds = lyricsDurationSeconds,
     )
 }
 
@@ -1898,6 +1927,8 @@ private data class NextResponseDto(
 private data class LyricsResponseDto(
     val source: String,
     val synced: Boolean,
+    /** Duration of the recording these lyrics were timed against, when the provider told us. */
+    val lyricsDurationSeconds: Int? = null,
     val text: String,
     val lines: List<String>,
     val entries: List<LyricEntryDto> = emptyList(),

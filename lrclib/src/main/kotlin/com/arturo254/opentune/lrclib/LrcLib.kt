@@ -86,6 +86,35 @@ object LrcLib {
         }
     }
 
+    /**
+     * The best match plus the duration of the recording it came from.
+     *
+     * The caller needs that duration: when it disagrees with what is actually playing, the lyrics
+     * belong to a different cut of the song -- an album version against an official video with an
+     * intro, say -- and their timings will be shifted by the difference.
+     */
+    data class Match(
+        val text: String,
+        val durationSeconds: Int,
+    )
+
+    suspend fun getBestMatch(
+        title: String,
+        artist: String,
+        duration: Int,
+        album: String? = null,
+    ): Result<Match> = runCatching {
+        val tracks = queryLyrics(artist, title, album)
+        val track = if (duration == -1) {
+            tracks.bestMatchingFor(duration, title, artist)
+        } else {
+            tracks.bestMatchingFor(duration)
+        }
+
+        val synced = track?.syncedLyrics ?: throw IllegalStateException("Lyrics unavailable")
+        Match(text = synced, durationSeconds = track.duration.toInt())
+    }
+
     suspend fun getAllLyrics(
         title: String,
         artist: String,
