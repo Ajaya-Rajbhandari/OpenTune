@@ -73,6 +73,66 @@ private val webAuthJson = Json {
     encodeDefaults = true
 }
 private val webAuthSessionPath: Path = resolveWebAuthSessionPath()
+
+private const val MAX_CACHE_ENTRIES = 512
+
+private val catalogCacheTtl = TimeUnit.MINUTES.toMillis(10)
+private val searchCacheTtl = TimeUnit.MINUTES.toMillis(5)
+private val libraryCacheTtl = TimeUnit.MINUTES.toMillis(5)
+private val lyricsCacheTtl = TimeUnit.HOURS.toMillis(24)
+private val playerCacheMaxTtl = TimeUnit.MINUTES.toMillis(30)
+
+/** Retire a stream URL well before YouTube does, so a cached one is never handed out dead. */
+private val playerCacheSafetyMargin = TimeUnit.MINUTES.toMillis(5)
+
+private class CachedResponse(val value: Any, val expiresAt: Long) {
+    val isExpired: Boolean
+        get() = System.currentTimeMillis() > expiresAt
+}
+
+private val responseCache = java.util.concurrent.ConcurrentHashMap<String, CachedResponse>()
+
+/**
+ * Serves [key] from cache when it is still fresh, otherwise runs [block] and stores the result.
+ *
+ * Only successful results are cached: [block] throwing propagates, so a transient upstream failure
+ * is retried on the next request rather than being remembered for the whole TTL.
+ */
+private suspend fun <T : Any> cached(key: String, ttlMillis: Long, block: suspend () -> T): T {
+    responseCache[key]?.takeIf { !it.isExpired }?.let {
+        @Suppress("UNCHECKED_CAST")
+        return it.value as T
+    }
+
+    val value = block()
+    cacheResponse(key, value, ttlMillis)
+    return value
+}
+
+private fun cacheResponse(key: String, value: Any, ttlMillis: Long) {
+    if (ttlMillis <= 0) return
+
+    if (responseCache.size >= MAX_CACHE_ENTRIES) {
+        responseCache.entries.removeIf { it.value.isExpired }
+        if (responseCache.size >= MAX_CACHE_ENTRIES) responseCache.clear()
+    }
+    responseCache[key] = CachedResponse(value, System.currentTimeMillis() + ttlMillis)
+}
+
+/**
+ * Drops every cached response.
+ *
+ * Browse, search and library requests all carry the signed-in identity, so their responses belong to
+ * whoever was logged in when they were stored. Keeping them across a login, logout or session
+ * degrade would serve one account's library to the next.
+ */
+private fun invalidateResponseCache() {
+    responseCache.clear()
+}
+
+private fun invalidateCachePrefix(prefix: String) {
+    responseCache.keys.removeIf { it.startsWith(prefix) }
+}
 private val pairingRandom = SecureRandom()
 private val pendingPairings = ConcurrentHashMap<String, PairingSession>()
 private const val pairingCodeAlphabet = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"
@@ -222,30 +282,35 @@ fun Application.module() {
             }
 
             get("/home") {
+                val params = call.request.queryParameters["params"]
+                    ?.trim()
+                    ?.takeIf { it.isNotBlank() }
                 call.respondApi {
-                    YouTube.home(
-                        params = call.request.queryParameters["params"]
-                            ?.trim()
-                            ?.takeIf { it.isNotBlank() },
-                    ).getOrThrow().toDto()
+                    cached("home:${params.orEmpty()}", catalogCacheTtl) {
+                        YouTube.home(params = params).getOrThrow().toDto()
+                    }
                 }
             }
 
             get("/search/suggestions") {
                 val query = call.requiredQuery("q") ?: return@get
                 call.respondApi {
-                    val suggestions = YouTube.searchSuggestions(query).getOrThrow()
-                    SearchSuggestionsDto(
-                        queries = suggestions.queries,
-                        recommendedItems = suggestions.recommendedItems.map(YTItem::toDto),
-                    )
+                    cached("suggestions:$query", searchCacheTtl) {
+                        val suggestions = YouTube.searchSuggestions(query).getOrThrow()
+                        SearchSuggestionsDto(
+                            queries = suggestions.queries,
+                            recommendedItems = suggestions.recommendedItems.map(YTItem::toDto),
+                        )
+                    }
                 }
             }
 
             get("/search/summary") {
                 val query = call.requiredQuery("q") ?: return@get
                 call.respondApi {
-                    YouTube.searchSummary(query).getOrThrow().toDto()
+                    cached("summary:$query", searchCacheTtl) {
+                        YouTube.searchSummary(query).getOrThrow().toDto()
+                    }
                 }
             }
 
@@ -254,38 +319,46 @@ fun Application.module() {
                 val filter = call.request.queryParameters["filter"]?.let(::searchFilterFromName)
                 if (filter == null) {
                     call.respondApi {
-                        YouTube.searchSummary(query).getOrThrow().toDto()
+                        cached("summary:$query", searchCacheTtl) {
+                            YouTube.searchSummary(query).getOrThrow().toDto()
+                        }
                     }
                     return@get
                 }
 
                 call.respondApi {
-                    YouTube.search(query, filter).getOrThrow().toDto()
+                    cached("search:${filter.value}:$query", searchCacheTtl) {
+                        YouTube.search(query, filter).getOrThrow().toDto()
+                    }
                 }
             }
 
             get("/explore") {
                 call.respondApi {
-                    YouTube.explore().getOrThrow().toDto()
+                    cached("explore", catalogCacheTtl) {
+                        YouTube.explore().getOrThrow().toDto()
+                    }
                 }
             }
 
             get("/browse") {
                 val browseId = call.requiredQuery("browseId") ?: return@get
+                val params = call.request.queryParameters["params"]
+                    ?.trim()
+                    ?.takeIf { it.isNotBlank() }
                 call.respondApi {
-                    YouTube.browse(
-                        browseId = browseId,
-                        params = call.request.queryParameters["params"]
-                            ?.trim()
-                            ?.takeIf { it.isNotBlank() },
-                    ).getOrThrow().toDto()
+                    cached("browse:$browseId:${params.orEmpty()}", catalogCacheTtl) {
+                        YouTube.browse(browseId = browseId, params = params).getOrThrow().toDto()
+                    }
                 }
             }
 
             get("/library") {
                 val filter = call.request.queryParameters["filter"]?.trim().orEmpty()
                 call.respondApi {
-                    loadLibraryItems(filter).toLibraryResponse(filter)
+                    cached("library:$filter", libraryCacheTtl) {
+                        loadLibraryItems(filter).toLibraryResponse(filter)
+                    }
                 }
             }
 
@@ -299,6 +372,8 @@ fun Application.module() {
 
                 call.respondApi {
                     YouTube.likeVideo(videoId, request.liked).exceptionOrNull()?.let { throw it }
+                    // The like just changed the library, so the cached copy is now wrong.
+                    invalidateCachePrefix("library:")
                     LikeResponseDto(videoId = videoId, liked = request.liked)
                 }
             }
@@ -311,12 +386,14 @@ fun Application.module() {
                 }
 
                 call.respondApi {
-                    val page = YouTube.album(browseId).getOrThrow()
-                    DetailResponseDto(
-                        kind = "album",
-                        item = page.album.toDto(),
-                        tracks = page.songs.map(YTItem::toDto),
-                    )
+                    cached("album:$browseId", catalogCacheTtl) {
+                        val page = YouTube.album(browseId).getOrThrow()
+                        DetailResponseDto(
+                            kind = "album",
+                            item = page.album.toDto(),
+                            tracks = page.songs.map(YTItem::toDto),
+                        )
+                    }
                 }
             }
 
@@ -328,13 +405,15 @@ fun Application.module() {
                 }
 
                 call.respondApi {
-                    val page = YouTube.playlist(playlistId).getOrThrow()
-                    DetailResponseDto(
-                        kind = "playlist",
-                        item = page.playlist.toDto(),
-                        tracks = page.songs.map(YTItem::toDto),
-                        continuation = page.songsContinuation ?: page.continuation,
-                    )
+                    cached("playlist:$playlistId", catalogCacheTtl) {
+                        val page = YouTube.playlist(playlistId).getOrThrow()
+                        DetailResponseDto(
+                            kind = "playlist",
+                            item = page.playlist.toDto(),
+                            tracks = page.songs.map(YTItem::toDto),
+                            continuation = page.songsContinuation ?: page.continuation,
+                        )
+                    }
                 }
             }
 
@@ -345,22 +424,27 @@ fun Application.module() {
                     return@get
                 }
 
+                val playlistId = call.request.queryParameters["playlistId"]?.trim()?.takeIf { it.isNotBlank() }
+                val setVideoId = call.request.queryParameters["setVideoId"]?.trim()?.takeIf { it.isNotBlank() }
+
                 call.respondApi {
-                    val next = YouTube.next(
-                        WatchEndpoint(
-                            videoId = videoId,
-                            playlistId = call.request.queryParameters["playlistId"]?.trim()?.takeIf { it.isNotBlank() },
-                            playlistSetVideoId = call.request.queryParameters["setVideoId"]?.trim()?.takeIf { it.isNotBlank() },
-                        ),
-                    ).getOrThrow()
-                    NextResponseDto(
-                        title = next.title,
-                        items = next.items.map(YTItem::toDto),
-                        currentIndex = next.currentIndex,
-                        continuation = next.continuation,
-                        lyricsEndpoint = next.lyricsEndpoint.toDto(),
-                        relatedEndpoint = next.relatedEndpoint.toDto(),
-                    )
+                    cached("next:$videoId:${playlistId.orEmpty()}:${setVideoId.orEmpty()}", catalogCacheTtl) {
+                        val next = YouTube.next(
+                            WatchEndpoint(
+                                videoId = videoId,
+                                playlistId = playlistId,
+                                playlistSetVideoId = setVideoId,
+                            ),
+                        ).getOrThrow()
+                        NextResponseDto(
+                            title = next.title,
+                            items = next.items.map(YTItem::toDto),
+                            currentIndex = next.currentIndex,
+                            continuation = next.continuation,
+                            lyricsEndpoint = next.lyricsEndpoint.toDto(),
+                            relatedEndpoint = next.relatedEndpoint.toDto(),
+                        )
+                    }
                 }
             }
 
@@ -372,24 +456,29 @@ fun Application.module() {
                 }
 
                 call.respondApi {
-                    val requestedTitle = call.request.queryParameters["title"]?.trim().orEmpty()
-                    val requestedArtist = call.request.queryParameters["artist"]?.trim().orEmpty()
-                    val requestedDuration = call.request.queryParameters["duration"]?.toIntOrNull() ?: -1
-                    val playerDetails = if (requestedDuration <= 0 || requestedTitle.isBlank() || requestedArtist.isBlank()) {
-                        runCatching { resolvePlayer(videoId).response.videoDetails }.getOrNull()
-                    } else {
-                        null
-                    }
+                    // A track's lyrics do not change, so this is keyed on the video alone and held
+                    // for a long TTL. It is by far the slowest endpoint, and the one users hit
+                    // repeatedly as they replay a song.
+                    cached("lyrics:$videoId", lyricsCacheTtl) {
+                        val requestedTitle = call.request.queryParameters["title"]?.trim().orEmpty()
+                        val requestedArtist = call.request.queryParameters["artist"]?.trim().orEmpty()
+                        val requestedDuration = call.request.queryParameters["duration"]?.toIntOrNull() ?: -1
+                        val playerDetails = if (requestedDuration <= 0 || requestedTitle.isBlank() || requestedArtist.isBlank()) {
+                            runCatching { resolvePlayer(videoId).response.videoDetails }.getOrNull()
+                        } else {
+                            null
+                        }
 
-                    resolveLyrics(
-                        videoId = videoId,
-                        title = requestedTitle.ifBlank { playerDetails?.title.orEmpty() },
-                        artist = requestedArtist.ifBlank { playerDetails?.author.orEmpty() },
-                        album = call.request.queryParameters["album"]?.trim()?.takeIf { it.isNotBlank() },
-                        duration = requestedDuration.takeIf { it > 0 }
-                            ?: playerDetails?.lengthSeconds?.toIntOrNull()
-                            ?: -1,
-                    )
+                        resolveLyrics(
+                            videoId = videoId,
+                            title = requestedTitle.ifBlank { playerDetails?.title.orEmpty() },
+                            artist = requestedArtist.ifBlank { playerDetails?.author.orEmpty() },
+                            album = call.request.queryParameters["album"]?.trim()?.takeIf { it.isNotBlank() },
+                            duration = requestedDuration.takeIf { it > 0 }
+                                ?: playerDetails?.lengthSeconds?.toIntOrNull()
+                                ?: -1,
+                        )
+                    }
                 }
             }
 
@@ -401,20 +490,7 @@ fun Application.module() {
                 }
 
                 call.respondApi {
-                    val resolved = resolvePlayer(videoId)
-                    val response = resolved.response
-
-                    PlayerResponseDto(
-                        videoId = response.videoDetails?.videoId ?: videoId,
-                        title = response.videoDetails?.title,
-                        author = response.videoDetails?.author,
-                        durationSeconds = response.videoDetails?.lengthSeconds?.toIntOrNull(),
-                        thumbnail = response.videoDetails?.thumbnail?.thumbnails?.lastOrNull()?.normalizedUrl,
-                        playabilityStatus = response.playabilityStatus.status,
-                        playabilityReason = response.playabilityStatus.reason,
-                        expiresInSeconds = response.streamingData?.expiresInSeconds,
-                        formats = resolved.formats,
-                    )
+                    cachedPlayerResponse(videoId)
                 }
             }
         }
@@ -475,12 +551,14 @@ private fun applyWebAuthSession(session: AuthSessionRequestDto) {
     )
     YouTube.useLoginForBrowse = true
     cacheWebAccount(null)
+    invalidateResponseCache()
 }
 
 private fun clearWebAuthSession() {
     YouTube.authState = PlaybackAuthState.EMPTY
     YouTube.useLoginForBrowse = false
     cacheWebAccount(null)
+    invalidateResponseCache()
 }
 
 /**
@@ -496,6 +574,7 @@ private fun degradeWebAuthSession() {
     YouTube.authState = PlaybackAuthState(visitorData = YouTube.authState.visitorData)
     YouTube.useLoginForBrowse = false
     cacheWebAccount(null)
+    invalidateResponseCache()
 }
 
 private fun rejectedSessionMessage(error: Throwable): String =
@@ -898,6 +977,44 @@ private data class ResolvedPlayer(
     val response: PlayerResponse,
     val formats: List<PlayerFormatDto>,
 )
+
+/**
+ * Resolves playback for [videoId], caching only what is safe to reuse.
+ *
+ * Stream URLs are signed and time-limited, so this cannot use a fixed TTL like the other endpoints:
+ * serving one past its expiry would hand the client a URL that plays nothing. The TTL is taken from
+ * the stream's own advertised lifetime, minus a margin, and capped.
+ *
+ * Unplayable results are deliberately not cached. A video can be blocked for transient reasons, and
+ * pinning that failure for half an hour would make a recoverable hiccup look permanent.
+ */
+private suspend fun cachedPlayerResponse(videoId: String): PlayerResponseDto {
+    val key = "player:$videoId"
+    responseCache[key]?.takeIf { !it.isExpired }?.let { return it.value as PlayerResponseDto }
+
+    val resolved = resolvePlayer(videoId)
+    val response = resolved.response
+    val dto = PlayerResponseDto(
+        videoId = response.videoDetails?.videoId ?: videoId,
+        title = response.videoDetails?.title,
+        author = response.videoDetails?.author,
+        durationSeconds = response.videoDetails?.lengthSeconds?.toIntOrNull(),
+        thumbnail = response.videoDetails?.thumbnail?.thumbnails?.lastOrNull()?.normalizedUrl,
+        playabilityStatus = response.playabilityStatus.status,
+        playabilityReason = response.playabilityStatus.reason,
+        expiresInSeconds = response.streamingData?.expiresInSeconds,
+        formats = resolved.formats,
+    )
+
+    if (dto.playabilityStatus == "OK" && dto.formats.isNotEmpty()) {
+        val streamLifetime = dto.expiresInSeconds
+            ?.let { TimeUnit.SECONDS.toMillis(it.toLong()) }
+            ?: 0L
+        cacheResponse(key, dto, minOf(streamLifetime - playerCacheSafetyMargin, playerCacheMaxTtl))
+    }
+
+    return dto
+}
 
 private suspend fun resolvePlayer(videoId: String): ResolvedPlayer {
     val signatureTimestamp = NewPipeUtils.getSignatureTimestamp(videoId).getOrNull()
