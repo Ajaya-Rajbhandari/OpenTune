@@ -1650,7 +1650,7 @@ function renderPlayer(): void {
     button.classList.toggle("active", state.shuffle);
     button.setAttribute("aria-label", state.shuffle ? "Shuffle on" : "Shuffle off");
   });
-  qsa<HTMLButtonElement>("#barAutoplayButton").forEach((button) => {
+  qsa<HTMLButtonElement>("#barAutoplayButton, #sheetAutoplayButton, #nowPageAutoplayButton, #lyricsAutoplayButton").forEach((button) => {
     button.classList.toggle("active", state.autoplayRadio);
     button.setAttribute("aria-label", state.autoplayRadio ? "Autoplay on" : "Autoplay off");
     button.title = state.autoplayRadio
@@ -2537,7 +2537,7 @@ function bindEvents(): void {
   ["#barPrevButton", "#sheetPrevButton", "#nowPagePrevButton", "#lyricsPrevButton"].forEach((selector) => qs(selector).addEventListener("click", previousTrack));
   ["#barShuffleButton", "#sheetShuffleButton", "#nowPageShuffleButton", "#lyricsShuffleButton"].forEach((selector) => qs(selector).addEventListener("click", toggleShuffle));
   ["#barRepeatButton", "#sheetRepeatButton", "#nowPageRepeatButton", "#lyricsRepeatButton"].forEach((selector) => qs(selector).addEventListener("click", cycleRepeatMode));
-  qs("#barAutoplayButton").addEventListener("click", toggleAutoplay);
+  ["#barAutoplayButton", "#sheetAutoplayButton", "#nowPageAutoplayButton", "#lyricsAutoplayButton"].forEach((selector) => qs(selector).addEventListener("click", toggleAutoplay));
   qs("#barQueueButton").addEventListener("click", openQueuePanel);
   ["#sheetFavoriteButton", "#sideFavoriteButton", "#nowPageFavoriteButton"].forEach((selector) => qs(selector).addEventListener("click", () => void toggleFavorite(state.currentTrackId)));
   ["#sideArtist", "#sheetArtist", "#nowPageArtist"].forEach((selector) => {
