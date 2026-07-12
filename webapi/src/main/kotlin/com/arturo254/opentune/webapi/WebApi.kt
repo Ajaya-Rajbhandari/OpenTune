@@ -1086,6 +1086,63 @@ private fun List<YTItem>.toLibraryResponse(filter: String) = LibraryResponseDto(
     items = map(YTItem::toDto),
 )
 
+/** Decoration an uploader adds that no lyric database knows about. */
+private val lyricsNoiseRegex = Regex(
+    """\((?:official|lyric|audio|video|visualizer|full|hd|4k|mv)[^)]*\)|\[[^\]]*\]|""" +
+        """\b(?:official\s+(?:music\s+)?video|official\s+audio|lyric\s+video|lyrics|music\s+video|visualizer|full\s+song|hd|4k)\b""",
+    RegexOption.IGNORE_CASE,
+)
+
+/** A featured-artist credit, which belongs to the artist field rather than the title. */
+private val lyricsFeatureRegex = Regex(
+    """[\(\[]?\s*(?:feat\.?|ft\.?|featuring)\s+[^)\]]*[\)\]]?""",
+    RegexOption.IGNORE_CASE,
+)
+
+/**
+ * Readings of the same song to try against the lyric providers, tidiest last.
+ *
+ * The raw values go first: when they are already clean they match immediately and nothing else runs.
+ */
+private fun lyricsSearchVariants(title: String, artist: String): List<Pair<String, String>> {
+    if (title.isBlank() || artist.isBlank()) return emptyList()
+
+    val primaryArtist = artist.substringBefore(",").substringBefore(" & ").trim().ifBlank { artist }
+    val cleanedTitle = title.cleanedLyricsTitle(artist)
+
+    return listOf(
+        title to artist,
+        cleanedTitle to primaryArtist,
+        cleanedTitle.substringBefore(" - ") to primaryArtist,
+    )
+        .map { (variantTitle, variantArtist) -> variantTitle.trim() to variantArtist.trim() }
+        .filter { (variantTitle, variantArtist) -> variantTitle.isNotBlank() && variantArtist.isNotBlank() }
+        .distinct()
+}
+
+/**
+ * Strips what an uploader added and a provider will not recognise: decoration, featured credits, and
+ * the artist's own name where it has been folded into the title.
+ */
+private fun String.cleanedLyricsTitle(artist: String): String {
+    var cleaned = lyricsFeatureRegex.replace(this, " ")
+    cleaned = lyricsNoiseRegex.replace(cleaned, " ")
+
+    // "Nepali Ho by 1974 AD", "Ashma - Neetesh J K": the artist is inside the title, not beside it.
+    val names = listOf(artist, artist.substringBefore(",").trim()).filter { it.isNotBlank() }.distinct()
+    for (name in names) {
+        val escaped = Regex.escape(name)
+        cleaned = cleaned.replace(Regex("""\s*(?:-|\u2013|\u2014|\||by)\s*$escaped\s*$""", RegexOption.IGNORE_CASE), " ")
+        cleaned = cleaned.replace(Regex("""^\s*$escaped\s*(?:-|\u2013|\u2014|\|)\s*""", RegexOption.IGNORE_CASE), "")
+    }
+
+    return cleaned
+        .replace(Regex("""\s{2,}"""), " ")
+        .trim()
+        .trim('-', '\u2013', '\u2014', '|', ':')
+        .trim()
+}
+
 private suspend fun resolveLyrics(
     videoId: String,
     title: String,
@@ -1100,22 +1157,29 @@ private suspend fun resolveLyrics(
             ?: error("Lyrics unavailable")
     }.getOrNull()
 
-    if (title.isNotBlank() && artist.isNotBlank()) {
-        LrcLib.getLyrics(
-            title = title,
-            artist = artist,
-            duration = duration,
-            album = null,
-        ).getOrNull()?.validLyricsOrNull()?.let { lyrics ->
-            return lyrics.toLyricsResponse(source = "lrclib", synced = lyrics.hasLrcTimestamps())
-        }
+    // Lyric providers key on a clean "title" and "artist". A YouTube title is not that: it carries
+    // the artist ("Nepali Ho by 1974 AD"), a subtitle ("Ashma (A Confession) - Neetesh J K"), and
+    // decoration like (Official Video) or [4K]. Searching for that verbatim finds nothing, which is
+    // most of what "lyrics unavailable" actually meant. Try progressively tidier readings of the
+    // same song before giving up, and also try without the duration, which providers match strictly.
+    for ((searchTitle, searchArtist) in lyricsSearchVariants(title, artist)) {
+        for (searchDuration in listOfNotNull(duration.takeIf { it > 0 }, -1).distinct()) {
+            LrcLib.getLyrics(
+                title = searchTitle,
+                artist = searchArtist,
+                duration = searchDuration,
+                album = null,
+            ).getOrNull()?.validLyricsOrNull()?.let { lyrics ->
+                return lyrics.toLyricsResponse(source = "lrclib", synced = lyrics.hasLrcTimestamps())
+            }
 
-        KuGou.getLyrics(
-            title = title,
-            artist = artist,
-            duration = duration,
-        ).getOrNull()?.validLyricsOrNull()?.let { lyrics ->
-            return lyrics.toLyricsResponse(source = "kugou", synced = lyrics.hasLrcTimestamps())
+            KuGou.getLyrics(
+                title = searchTitle,
+                artist = searchArtist,
+                duration = searchDuration,
+            ).getOrNull()?.validLyricsOrNull()?.let { lyrics ->
+                return lyrics.toLyricsResponse(source = "kugou", synced = lyrics.hasLrcTimestamps())
+            }
         }
     }
 
