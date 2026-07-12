@@ -35,6 +35,11 @@ export interface Track {
   lyricsSynced?: boolean;
   lyricsSource?: string;
   lyricsMatchDuration?: number;
+  /**
+   * How far the lyrics are likely to run ahead, in ms, because they were timed against a shorter
+   * recording than the one playing -- an album cut against an official video with an intro.
+   */
+  lyricsIntroDriftMs?: number;
   artistId?: string;
   albumId?: string;
 }
@@ -264,6 +269,8 @@ export interface NextResponseDto {
 export interface LyricsResponseDto {
   source: string;
   synced: boolean;
+  /** Duration of the recording the lyrics were timed against, when the provider reported it. */
+  lyricsDurationSeconds?: number;
   text: string;
   lines: string[];
   entries: Array<{ time: number; text: string }>;
