@@ -4,6 +4,9 @@ import { AudioPlayer } from "./player";
 import type { AppState, AuthStatusDto, LyricsCalibration, Route, Track } from "./types";
 
 const storageKey = "opentune-web-app-state";
+
+/** Deep enough to step back through a long listening session, bounded so it cannot grow forever. */
+const MAX_HISTORY = 200;
 const lyricsOffsetStepMs = 500;
 const lyricsOffsetLimitMs = 60_000;
 const lyricsLeadMs = 300;
@@ -55,6 +58,8 @@ const state: AppState = {
   library: { status: "idle", activeFilter: "", itemIdsByFilter: {}, error: "" },
   currentTrackId: "",
   queue: [],
+  history: [],
+  queueSource: [],
   favorites: new Set(),
   downloaded: new Set(),
   isPlaying: false,
@@ -217,6 +222,8 @@ function saveState(): void {
     query: state.query,
     currentTrackId: state.currentTrackId,
     queue: state.queue,
+    history: state.history,
+    queueSource: state.queueSource,
     position: state.position,
     shuffle: state.shuffle,
     repeatMode: state.repeatMode,
@@ -239,6 +246,8 @@ function loadState(): void {
     if (typeof saved.query === "string") state.query = saved.query;
     if (saved.currentTrackId && tracks.some((track) => track.id === saved.currentTrackId && track.source !== "demo")) state.currentTrackId = saved.currentTrackId;
     if (Array.isArray(saved.queue)) state.queue = saved.queue.filter((id: string) => tracks.some((track) => track.id === id));
+    if (Array.isArray(saved.history)) state.history = saved.history.filter((id: string) => tracks.some((track) => track.id === id));
+    if (Array.isArray(saved.queueSource)) state.queueSource = saved.queueSource.filter((id: string) => tracks.some((track) => track.id === id));
     if (Array.isArray(saved.favorites)) state.favorites = new Set(saved.favorites.filter((id: string) => tracks.some((track) => track.id === id)));
     if (Array.isArray(saved.downloaded)) state.downloaded = new Set(saved.downloaded.filter((id: string) => tracks.some((track) => track.id === id)));
     if (typeof saved.position === "number") state.position = saved.position;
@@ -547,6 +556,8 @@ function migratePlayerToRealData(): void {
   player.stop();
   state.currentTrackId = "";
   state.queue = [];
+  state.history = [];
+  state.queueSource = [];
   state.position = 0;
   state.isPlaying = false;
   state.loadingTrackId = null;
@@ -1026,6 +1037,8 @@ function clearDemoPlayback(): void {
   player.stop();
   state.currentTrackId = "";
   state.queue = [];
+  state.history = [];
+  state.queueSource = [];
   state.position = 0;
   state.isPlaying = false;
   state.loadingTrackId = null;
@@ -1435,11 +1448,23 @@ function playLibrary(shuffle = false): void {
     return;
   }
 
-  const ordered = shuffle ? shuffled(playable) : playable;
-  const first = ordered[0];
-  state.queue = ordered.slice(1).map((track) => track.id);
+  startQueue(playable, shuffle);
+}
+
+/**
+ * Starts [tracks] as the playing context.
+ *
+ * The source is kept in its natural order even when starting shuffled: it is what a repeat-all wrap
+ * draws from, and what turning shuffle back off restores the upcoming tracks to.
+ */
+function startQueue(tracks: Track[], shuffle: boolean): void {
   if (shuffle) state.shuffle = true;
-  playTrack(first.id);
+
+  const ordered = state.shuffle ? shuffled(tracks) : tracks;
+  state.queueSource = tracks.map((track) => track.id);
+  state.queue = ordered.slice(1).map((track) => track.id);
+  state.history = [];
+  playTrack(ordered[0].id, { recordHistory: false });
 }
 
 function shuffled<T>(items: T[]): T[] {
@@ -1453,7 +1478,16 @@ function shuffled<T>(items: T[]): T[] {
 
 function toggleShuffle(): void {
   state.shuffle = !state.shuffle;
-  if (state.shuffle && state.queue.length > 1) state.queue = shuffled(state.queue);
+
+  if (state.shuffle) {
+    if (state.queue.length > 1) state.queue = shuffled(state.queue);
+  } else if (state.queueSource.length) {
+    // Turning shuffle off puts what is still upcoming back into the order the playlist actually has,
+    // rather than leaving it in whatever order the shuffle left behind.
+    const upcoming = new Set(state.queue);
+    state.queue = state.queueSource.filter((id) => upcoming.has(id));
+  }
+
   showToast(state.shuffle ? "Shuffle on" : "Shuffle off");
   render();
   saveState();
@@ -1553,11 +1587,7 @@ function playDetail(shuffle = false): void {
     return;
   }
 
-  const ordered = shuffle ? shuffled(playable) : playable;
-  const first = ordered[0];
-  state.queue = ordered.slice(1).map((track) => track.id);
-  if (shuffle) state.shuffle = true;
-  playTrack(first.id);
+  startQueue(playable, shuffle);
 }
 
 function renderPlayer(): void {
@@ -2086,13 +2116,21 @@ function renderSheetPages(): void {
   qs(`#${state.playerPage}Page`).classList.add("active");
 }
 
-function playTrack(trackId: string): void {
+function playTrack(trackId: string, options: { recordHistory?: boolean } = {}): void {
   const track = trackById(trackId);
   if (track.playable === false) {
     showToast(`${track.type} pages are next`);
     return;
   }
   const isRemote = player.isRemoteTrack(track);
+
+  // Everything that starts a track records what it displaced, so "previous" can retrace what was
+  // actually heard. Stepping backwards is the one exception: it is consuming history, not making it.
+  if (options.recordHistory !== false && state.currentTrackId && state.currentTrackId !== trackId) {
+    state.history.push(state.currentTrackId);
+    if (state.history.length > MAX_HISTORY) state.history.shift();
+  }
+
   if (state.currentTrackId !== trackId && player.audio.src) player.stop();
   state.currentTrackId = trackId;
   state.position = 0;
@@ -2217,28 +2255,63 @@ function togglePlay(): void {
   render();
 }
 
-function nextTrack(): void {
-  const playable = playableKnownTracks();
-  if (!playable.length) return;
-  if (state.repeatMode === "one" && !isEmptyTrack(currentTrack())) {
-    playTrack(state.currentTrackId);
-    return;
-  }
-  const currentIndex = playable.findIndex((track) => track.id === state.currentTrackId);
-  if (currentIndex === -1 && !state.queue.length) return;
-  if (!state.queue.length && state.repeatMode === "off" && currentIndex === playable.length - 1) return;
-  const next = state.shuffle
-    ? playable[Math.floor(Math.random() * playable.length)].id
-    : state.queue.shift() || playable[(currentIndex + 1 + playable.length) % playable.length].id;
-  playTrack(next);
+/**
+ * The next track in the queue, refilling from the source when repeat-all wraps it around.
+ *
+ * Shuffle belongs to the *order of the queue*, not to this choice. Picking at random here meant
+ * drawing from every track the app happened to have loaded -- so shuffle wandered out of the
+ * playlist you started, and could hand you the song already playing.
+ */
+function takeNextQueuedTrack(): string | undefined {
+  if (state.queue.length) return state.queue.shift();
+  if (state.repeatMode !== "all" || !state.queueSource.length) return undefined;
+
+  // Repeat-all starts the whole context again. Refilling with everything *except* the current track
+  // would quietly drop it from the next cycle, so take the full list and simply rotate it if it
+  // would otherwise hand back the song that is playing right now.
+  const refill = state.shuffle ? shuffled(state.queueSource) : state.queueSource.slice();
+  if (refill.length > 1 && refill[0] === state.currentTrackId) refill.push(refill.shift() as string);
+
+  state.queue = refill;
+  return state.queue.shift();
 }
 
-function previousTrack(): void {
+function nextTrack(): void {
+  if (state.repeatMode === "one" && !isEmptyTrack(currentTrack())) {
+    playTrack(state.currentTrackId, { recordHistory: false });
+    return;
+  }
+
+  const queued = takeNextQueuedTrack();
+  if (queued) {
+    playTrack(queued);
+    return;
+  }
+
+  // Nothing queued: fall back to stepping through whatever is on screen, so a track played on its
+  // own still advances.
   const playable = playableKnownTracks();
   if (!playable.length) return;
   const index = playable.findIndex((track) => track.id === state.currentTrackId);
   if (index === -1) return;
-  playTrack(playable[(index - 1 + playable.length) % playable.length].id);
+  if (state.repeatMode === "off" && index === playable.length - 1) return;
+  playTrack(playable[(index + 1) % playable.length].id);
+}
+
+function previousTrack(): void {
+  // Back to what was actually heard. This used to step backwards through the track *list* instead,
+  // so after shuffle jumped from track 1 to track 4, "previous" offered track 3 -- a song that had
+  // never played -- and with shuffle drawing from every loaded track it was often not even from the
+  // same playlist.
+  const previous = state.history.pop();
+  if (previous) {
+    if (state.currentTrackId) state.queue.unshift(state.currentTrackId);
+    playTrack(previous, { recordHistory: false });
+    return;
+  }
+
+  // Nothing has played before this. Restart rather than guess at a neighbour.
+  if (!isEmptyTrack(currentTrack())) playTrack(state.currentTrackId, { recordHistory: false });
 }
 
 async function toggleFavorite(trackId: string): Promise<void> {
