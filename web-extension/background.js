@@ -3,7 +3,87 @@ const COOKIE_URLS = ["https://music.youtube.com", "https://www.youtube.com", "ht
 const MUSIC_TAB_MATCHES = ["https://music.youtube.com/*", "https://www.youtube.com/*"];
 const AUTH_TIMEOUT_MS = 10 * 60 * 1000;
 
+const BRIDGE_SCRIPT_ID = "opentune-page-bridge";
+const STATIC_BRIDGE_MATCHES = [
+  "http://localhost:8080/*",
+  "http://127.0.0.1:8080/*",
+  "http://localhost:5173/*",
+  "http://127.0.0.1:5173/*",
+];
+
 let pendingAuth = null;
+
+// The bundled content script only matches loopback. When OpenTune Web is opened on a
+// LAN address (required for Android pairing, since the phone cannot reach localhost),
+// the user clicks the toolbar icon to grant that origin and we inject the bridge there.
+chrome.action.onClicked.addListener((tab) => {
+  void grantCurrentOrigin(tab);
+});
+
+chrome.runtime.onStartup.addListener(() => {
+  void syncGrantedBridges();
+});
+
+chrome.runtime.onInstalled.addListener(() => {
+  void syncGrantedBridges();
+});
+
+async function grantCurrentOrigin(tab) {
+  if (typeof tab?.id !== "number" || !tab.url) return;
+
+  let origin;
+  try {
+    const url = new URL(tab.url);
+    if (!isPrivateHostname(url.hostname)) throw new Error("not private");
+    origin = `${url.origin}/*`;
+  } catch (_error) {
+    await notifyTab(tab.id, "Open OpenTune Web on this tab first, then click the helper icon.");
+    return;
+  }
+
+  const granted = await chrome.permissions.request({ origins: [origin] }).catch(() => false);
+  if (!granted) return;
+
+  await syncGrantedBridges();
+  await chrome.tabs.reload(tab.id);
+}
+
+// Content scripts registered dynamically do not survive a service-worker restart unless
+// re-registered, so rebuild the set from whatever origins the user has actually granted.
+async function syncGrantedBridges() {
+  const { origins = [] } = await chrome.permissions.getAll();
+  // getAll() also returns the static YouTube/Google host permissions. Injecting the page
+  // bridge into those would be both useless and a needless expansion of its reach, so keep
+  // only private-network OpenTune origins that the static content_scripts block misses.
+  const matches = origins.filter((origin) => {
+    if (STATIC_BRIDGE_MATCHES.includes(origin)) return false;
+    try {
+      return isPrivateHostname(new URL(origin.replace(/\*$/, "")).hostname);
+    } catch (_error) {
+      return false;
+    }
+  });
+
+  await chrome.scripting.unregisterContentScripts({ ids: [BRIDGE_SCRIPT_ID] }).catch(() => {});
+  if (!matches.length) return;
+
+  await chrome.scripting
+    .registerContentScripts([
+      {
+        id: BRIDGE_SCRIPT_ID,
+        js: ["opentune-page.js"],
+        matches,
+        runAt: "document_start",
+      },
+    ])
+    .catch(() => {});
+}
+
+async function notifyTab(tabId, message) {
+  await chrome.scripting
+    .executeScript({ target: { tabId }, func: (text) => alert(text), args: [message] })
+    .catch(() => {});
+}
 
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (!message || message.type !== "opentune.startAuth") return false;
@@ -178,11 +258,25 @@ function normalizeDataSyncId(value) {
   return normalized.endsWith("||") ? normalized.split("||")[0] : normalized.split("||").find(Boolean);
 }
 
+// The helper must only ever ship a YouTube Music session to an OpenTune server the
+// user actually controls, so origins are restricted to loopback and private-network
+// ranges. A public host would mean handing the cookie to a third party.
+function isPrivateHostname(hostname) {
+  if (hostname === "localhost" || hostname === "127.0.0.1" || hostname === "::1") return true;
+  if (hostname.endsWith(".local")) return true;
+  if (/^10\.\d{1,3}\.\d{1,3}\.\d{1,3}$/.test(hostname)) return true;
+  if (/^192\.168\.\d{1,3}\.\d{1,3}$/.test(hostname)) return true;
+  if (/^172\.(1[6-9]|2\d|3[01])\.\d{1,3}\.\d{1,3}$/.test(hostname)) return true;
+  return false;
+}
+
 function resolveApiBase(value) {
   const url = new URL(value);
-  if ((url.hostname === "localhost" || url.hostname === "127.0.0.1") && url.port === "8080") return url.origin;
-  if ((url.hostname === "localhost" || url.hostname === "127.0.0.1") && url.port === "5173") {
-    return `http://${url.hostname}:8080`;
+  if (!isPrivateHostname(url.hostname)) {
+    throw new Error("OpenTune Login Helper only connects to OpenTune servers on your own network.");
   }
-  throw new Error("OpenTune Login Helper only connects to local OpenTune web servers.");
+  // The Vite dev server proxies /api, but the extension fetches the API directly,
+  // so hop from the dev port to the Ktor port.
+  if (url.port === "5173") return `http://${url.hostname}:8080`;
+  return url.origin;
 }

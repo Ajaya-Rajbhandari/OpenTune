@@ -108,3 +108,8 @@ core.*
 # AI code review
 /.qodo/
 /.github/copilot-instructions.md
+
+# Browser extension package artifacts
+/web-extension/*.zip
+/web-extension/*.crx
+/web-extension/*.pem
