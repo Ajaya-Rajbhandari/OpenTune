@@ -51,8 +51,10 @@ import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
 import java.io.File
+import java.net.HttpURLConnection
 import java.net.Inet4Address
 import java.net.NetworkInterface
+import java.net.URL
 import java.nio.charset.StandardCharsets
 import java.nio.file.Files
 import java.nio.file.Path
@@ -105,6 +107,9 @@ private val searchCacheTtl = TimeUnit.MINUTES.toMillis(5)
 private val libraryCacheTtl = TimeUnit.MINUTES.toMillis(5)
 private val lyricsCacheTtl = TimeUnit.HOURS.toMillis(24)
 private val playerCacheMaxTtl = TimeUnit.MINUTES.toMillis(30)
+
+/** Short: this runs before playback can start, and a client that cannot serve should be abandoned fast. */
+private val streamProbeTimeoutMillis = TimeUnit.SECONDS.toMillis(6).toInt()
 
 /** Retire a stream URL well before YouTube does, so a cached one is never handed out dead. */
 private val playerCacheSafetyMargin = TimeUnit.MINUTES.toMillis(5)
@@ -1296,7 +1301,24 @@ private suspend fun resolvePlayer(videoId: String): ResolvedPlayer {
 
         val resolved = ResolvedPlayer(client, response, resolvedFormats)
         if (firstPlayableResponse == null) firstPlayableResponse = resolved
-        if (resolvedFormats.any { it.url != null }) return resolved
+
+        // Having a URL is not the same as having a playable one. WEB_REMIX is tried first and
+        // answers for most tracks, but its stream URLs carry a throttling `n` parameter and want a
+        // PO token this server cannot mint, so YouTube answers 403 to the browser -- while
+        // everything here still looked like a success. Whether a track fell through to a client that
+        // needs no PO token was luck, which is why some songs played and others did not.
+        //
+        // Check the URL actually serves bytes, and move to the next client when it does not.
+        // Verifying beats keeping a list of which clients need a PO token: that answer keeps
+        // changing, and a client that quietly starts failing would otherwise still look fine here.
+        val candidate = resolvedFormats.firstOrNull { it.url != null }?.url
+        if (candidate != null) {
+            if (isStreamPlayable(candidate)) return resolved
+
+            System.err.println(
+                "[opentune-web-api] $videoId: ${client.clientName} returned URLs YouTube refuses; trying the next client",
+            )
+        }
     }
 
     val fallback = firstPlayableResponse ?: firstResponse
@@ -1315,6 +1337,32 @@ private suspend fun resolvePlayer(videoId: String): ResolvedPlayer {
     }
 
     return firstPlayableResponse ?: firstResponse ?: error("No player response returned")
+}
+
+/**
+ * Asks for the first byte of [url] to find out whether YouTube will actually serve it.
+ *
+ * A signed URL that 403s is indistinguishable from a good one until something fetches it, and the
+ * browser is a bad place to discover that: by then the only signal left is an audio element saying
+ * it found no supported source, which points at the codec rather than at the real cause.
+ */
+private suspend fun isStreamPlayable(url: String): Boolean = withContext(Dispatchers.IO) {
+    runCatching {
+        val connection = (URL(url).openConnection() as HttpURLConnection).apply {
+            requestMethod = "GET"
+            setRequestProperty("Range", "bytes=0-1")
+            connectTimeout = streamProbeTimeoutMillis
+            readTimeout = streamProbeTimeoutMillis
+            instanceFollowRedirects = true
+        }
+
+        val code = try {
+            connection.responseCode
+        } finally {
+            connection.disconnect()
+        }
+        code in 200..299
+    }.getOrDefault(false)
 }
 
 private suspend fun resolveWithYtDlp(videoId: String): String? = withContext(Dispatchers.IO) {
