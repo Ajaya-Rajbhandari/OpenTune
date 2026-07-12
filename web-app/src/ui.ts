@@ -12,6 +12,9 @@ const lyricsOffsetLimitMs = 60_000;
 
 /** Below this the two recordings are effectively the same cut and no correction is worth offering. */
 const lyricsIntroDriftMinSeconds = 4;
+
+/** How long the lyrics controls linger once the viewer stops interacting. */
+const lyricsIdleHideMs = 2600;
 const lyricsLeadMs = 300;
 const lyricsCalibrationMinGapMs = 20_000;
 const lyricsCalibrationMinLyricGapMs = 10_000;
@@ -340,6 +343,21 @@ function applyLyricsAlign(): void {
   saveState();
 }
 
+
+/**
+ * Keeps the lyrics chrome up while someone is actually there, and lets it fall away when they are
+ * not. Reacting to hover alone was not enough: a cursor left resting over the lyrics held the
+ * toolbar open indefinitely, over the very thing it is covering.
+ */
+let lyricsIdleTimer = 0;
+
+function wakeLyricsControls(): void {
+  const overlay = qs<HTMLElement>("#nowPageLyricsOverlay");
+  overlay.classList.add("awake");
+  window.clearTimeout(lyricsIdleTimer);
+  lyricsIdleTimer = window.setTimeout(() => overlay.classList.remove("awake"), lyricsIdleHideMs);
+}
+
 function clampLyricsOffsetMs(offsetMs: number): number {
   return Math.max(-lyricsOffsetLimitMs, Math.min(lyricsOffsetLimitMs, Math.round(offsetMs)));
 }
@@ -604,11 +622,67 @@ function migratePlayerToRealData(): void {
   state.playbackError = "";
 }
 
+
+/** Best still we have confirmed exists, per video. */
+const artworkUpgrades = new Map<string, string>();
+
+/**
+ * The artwork URL to actually display.
+ *
+ * Two sources, both wrong out of the box. Google's image CDN hands back a 120px thumbnail and, given
+ * a widescreen frame, pads it into the square with black bars unless asked to crop -- so the padding
+ * is part of the image and no amount of CSS cropping removes it. YouTube's sddefault and hqdefault
+ * stills are 4:3 and carry the same baked-in bars.
+ *
+ * So ask the CDN for a large cropped square, and take the 16:9 stills instead, which cover-crop into
+ * the square cleanly.
+ */
+function artworkUrl(raw: string): string {
+  if (!raw) return raw;
+
+  if (/googleusercontent\.com|ggpht\.com/.test(raw)) {
+    return raw.replace(/=[^=]*$/, "=w720-h720-l90-rj-c");
+  }
+
+  const still = raw.match(/^(https:\/\/i\.ytimg\.com\/vi\/[^/]+)\//);
+  if (!still) return raw;
+
+  const base = still[1];
+  const resolved = artworkUpgrades.get(base);
+  if (resolved) return resolved;
+
+  // mqdefault is the only 16:9 still guaranteed to exist, so show it now rather than risk a blank
+  // panel, and quietly swap in a sharper one if the video has it.
+  if (!artworkUpgrades.has(base)) void resolveSharperArtwork(base);
+  return `${base}/mqdefault.jpg`;
+}
+
+async function resolveSharperArtwork(base: string): Promise<void> {
+  artworkUpgrades.set(base, "");
+
+  for (const name of ["maxresdefault", "hq720"]) {
+    const candidate = `${base}/${name}.jpg`;
+    const loaded = await new Promise<boolean>((resolve) => {
+      const image = new Image();
+      image.onload = () => resolve(image.naturalWidth > 0);
+      image.onerror = () => resolve(false);
+      image.src = candidate;
+    });
+
+    if (loaded) {
+      artworkUpgrades.set(base, candidate);
+      render();
+      return;
+    }
+  }
+}
+
 function setArtVars(element: HTMLElement, track: Track): void {
   element.style.setProperty("--art-a", track.colorA);
   element.style.setProperty("--art-b", track.colorB);
   element.style.setProperty("--art-c", track.colorC);
-  if (track.thumbnail) element.style.setProperty("--art-image", `url("${track.thumbnail.replace(/"/g, "%22")}")`);
+  const art = track.thumbnail ? artworkUrl(track.thumbnail) : "";
+  if (art) element.style.setProperty("--art-image", `url("${art.replace(/"/g, "%22")}")`);
   else element.style.removeProperty("--art-image");
 }
 
@@ -2644,6 +2718,12 @@ function bindEvents(): void {
   qs("#lyricsOffsetBackButton").addEventListener("click", () => adjustLyricsOffset(-lyricsOffsetStepMs));
   qs("#lyricsOffsetForwardButton").addEventListener("click", () => adjustLyricsOffset(lyricsOffsetStepMs));
   qs("#lyricsAlignButton").addEventListener("click", applyLyricsAlign);
+
+  const lyricsOverlay = qs<HTMLElement>("#nowPageLyricsOverlay");
+  ["pointermove", "pointerdown", "wheel"].forEach((event) => lyricsOverlay.addEventListener(event, wakeLyricsControls, { passive: true }));
+  window.addEventListener("keydown", () => {
+    if (lyricsOverlay.getAttribute("aria-hidden") === "false") wakeLyricsControls();
+  });
   qs("#lyricsOffsetForwardLargeButton").addEventListener("click", () => adjustLyricsOffset(5000));
   qs("#lyricsOffsetLabel").addEventListener("click", resetLyricsOffset);
   qs("#lyricsOffsetLabel").addEventListener("keydown", (event) => {

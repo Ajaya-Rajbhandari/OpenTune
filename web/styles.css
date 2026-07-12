@@ -1363,8 +1363,13 @@ h1 {
   transition: max-height 240ms ease, opacity 180ms ease, transform 240ms cubic-bezier(0.2, 0, 0, 1);
 }
 
-.now-page-lyrics-overlay:is(:hover, :focus-within) header,
-.now-page-lyrics-overlay:is(:hover, :focus-within) .lyrics-toolbar {
+/*
+ * Driven by activity, not by hover. A cursor left resting over the lyrics used to hold the toolbar
+ * open indefinitely, on top of the very thing it covers; now the chrome fades out once the viewer
+ * stops interacting, and comes back the moment they do.
+ */
+.now-page-lyrics-overlay:is(.awake, :focus-within) header,
+.now-page-lyrics-overlay:is(.awake, :focus-within) .lyrics-toolbar {
   max-height: 150px;
   opacity: 1;
   pointer-events: auto;
