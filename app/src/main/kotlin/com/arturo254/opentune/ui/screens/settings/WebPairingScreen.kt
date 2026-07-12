@@ -43,6 +43,9 @@ import androidx.compose.ui.unit.dp
 import androidx.navigation.NavController
 import com.arturo254.opentune.LocalPlayerAwareWindowInsets
 import com.arturo254.opentune.R
+import com.arturo254.opentune.constants.AccountChannelHandleKey
+import com.arturo254.opentune.constants.AccountEmailKey
+import com.arturo254.opentune.constants.AccountNameKey
 import com.arturo254.opentune.constants.DataSyncIdKey
 import com.arturo254.opentune.constants.InnerTubeCookieKey
 import com.arturo254.opentune.constants.PoTokenKey
@@ -82,10 +85,13 @@ fun WebPairingScreen(
 ) {
     val context = LocalContext.current
     val coroutineScope = rememberCoroutineScope()
-    val (innerTubeCookie) = rememberPreference(InnerTubeCookieKey, "")
-    val (visitorData) = rememberPreference(VisitorDataKey, "")
-    val (dataSyncId) = rememberPreference(DataSyncIdKey, "")
-    val (poToken) = rememberPreference(PoTokenKey, "")
+    var innerTubeCookie by rememberPreference(InnerTubeCookieKey, "")
+    var visitorData by rememberPreference(VisitorDataKey, "")
+    var dataSyncId by rememberPreference(DataSyncIdKey, "")
+    var poToken by rememberPreference(PoTokenKey, "")
+    var accountName by rememberPreference(AccountNameKey, "")
+    var accountEmail by rememberPreference(AccountEmailKey, "")
+    var accountChannelHandle by rememberPreference(AccountChannelHandleKey, "")
     val isLoggedIn = remember(innerTubeCookie) { "SAPISID" in parseCookieString(innerTubeCookie) }
 
     var server by remember(initialServer) { mutableStateOf(initialServer.orEmpty()) }
@@ -105,21 +111,28 @@ fun WebPairingScreen(
             style = MaterialTheme.typography.headlineMedium,
             fontWeight = FontWeight.Bold,
         )
+        // The session travels toward whichever device does not have one. A signed-in phone sends its
+        // login up to the web server; a fresh install pulls the server's login down, which is the
+        // whole point -- it means never doing a Google login on the phone.
         Text(
-            text = "Generate a pairing code in OpenTune Web, then send this Android login session to that local web server.",
+            text = if (isLoggedIn) {
+                "Generate a pairing code in OpenTune Web, then send this Android login session to that local web server."
+            } else {
+                "Generate a pairing code in OpenTune Web, then get its YouTube Music login to sign in here. No Google login needed on this device."
+            },
             style = MaterialTheme.typography.bodyMedium,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
 
         if (!isLoggedIn) {
             Surface(
-                color = MaterialTheme.colorScheme.errorContainer,
+                color = MaterialTheme.colorScheme.secondaryContainer,
                 shape = MaterialTheme.shapes.medium,
                 modifier = Modifier.fillMaxWidth(),
             ) {
                 Text(
-                    text = "Log in to YouTube Music on Android before pairing with OpenTune Web.",
-                    color = MaterialTheme.colorScheme.onErrorContainer,
+                    text = "This device is not signed in. Pairing will copy the login from OpenTune Web to this device.",
+                    color = MaterialTheme.colorScheme.onSecondaryContainer,
                     modifier = Modifier.padding(14.dp),
                 )
             }
@@ -144,22 +157,39 @@ fun WebPairingScreen(
         )
 
         Button(
-            enabled = isLoggedIn && !pairing && server.isNotBlank() && code.isNotBlank(),
+            enabled = !pairing && server.isNotBlank() && code.isNotBlank(),
             onClick = {
                 pairing = true
                 status = "Pairing..."
                 coroutineScope.launch {
-                    val result = completeWebPairing(
-                        server = server,
-                        code = code,
-                        cookie = innerTubeCookie,
-                        visitorData = visitorData,
-                        dataSyncId = dataSyncId,
-                        poToken = poToken,
-                    )
+                    val result = if (isLoggedIn) {
+                        completeWebPairing(
+                            server = server,
+                            code = code,
+                            cookie = innerTubeCookie,
+                            visitorData = visitorData,
+                            dataSyncId = dataSyncId,
+                            poToken = poToken,
+                        ).map { "OpenTune Web is paired." }
+                    } else {
+                        claimWebPairing(server = server, code = code).map { claimed ->
+                            innerTubeCookie = claimed.cookie
+                            visitorData = claimed.visitorData.orEmpty()
+                            // Matches how LoginScreen stores it; the raw value carries a "||" suffix
+                            // that the rest of the app does not expect.
+                            dataSyncId = claimed.dataSyncId.orEmpty().substringBefore("||")
+                            poToken = claimed.poToken.orEmpty()
+                            accountName = claimed.account?.name.orEmpty()
+                            accountEmail = claimed.account?.email.orEmpty()
+                            accountChannelHandle = claimed.account?.channelHandle.orEmpty()
+
+                            "Signed in as ${claimed.account?.name ?: "your YouTube Music account"}."
+                        }
+                    }
+
                     pairing = false
                     status = result.fold(
-                        onSuccess = { "OpenTune Web is paired." },
+                        onSuccess = { it },
                         onFailure = { it.message ?: "Pairing failed" },
                     )
                     Toast.makeText(context, status.orEmpty(), Toast.LENGTH_SHORT).show()
@@ -168,7 +198,13 @@ fun WebPairingScreen(
             },
             modifier = Modifier.fillMaxWidth(),
         ) {
-            Text(if (pairing) "Pairing..." else "Pair with web")
+            Text(
+                when {
+                    pairing -> "Pairing..."
+                    isLoggedIn -> "Send this login to web"
+                    else -> "Get login from web"
+                },
+            )
         }
 
         status?.let {
@@ -249,6 +285,54 @@ private suspend fun completeWebPairing(
     }
 }
 
+/**
+ * Redeems [code] to pull the web server's YouTube Music session onto this device.
+ *
+ * The mirror of [completeWebPairing], for a device with no login of its own. The code is single-use
+ * on the server, so a failure here means generating a fresh one rather than retrying this one.
+ */
+private suspend fun claimWebPairing(
+    server: String,
+    code: String,
+): Result<WebPairingClaimResponse> = withContext(Dispatchers.IO) {
+    runCatching {
+        val endpoint = URL("${normalizeServerUrl(server)}/api/auth/pairing/claim")
+        val payload = webPairingJson.encodeToString(
+            WebPairingClaimRequest(code = normalizePairingCode(code)),
+        )
+        val connection = (endpoint.openConnection() as HttpURLConnection).apply {
+            requestMethod = "POST"
+            connectTimeout = 10_000
+            readTimeout = 15_000
+            doOutput = true
+            setRequestProperty("Accept", "application/json")
+            setRequestProperty("Content-Type", "application/json")
+        }
+
+        connection.outputStream.use { output ->
+            output.write(payload.toByteArray(Charsets.UTF_8))
+        }
+
+        val body = runCatching {
+            val stream = if (connection.responseCode in 200..299) connection.inputStream else connection.errorStream
+            stream?.bufferedReader()?.use { it.readText() }.orEmpty()
+        }.getOrDefault("")
+
+        if (connection.responseCode !in 200..299) {
+            val error = runCatching {
+                webPairingJson.decodeFromString(WebPairingError.serializer(), body).error
+            }.getOrNull()
+            throw IllegalStateException(error ?: "OpenTune Web rejected pairing (${connection.responseCode})")
+        }
+
+        val claimed = webPairingJson.decodeFromString(WebPairingClaimResponse.serializer(), body)
+        check("SAPISID" in parseCookieString(claimed.cookie)) {
+            "OpenTune Web sent an unusable session. Sign in on OpenTune Web, then pair again."
+        }
+        claimed
+    }
+}
+
 private fun normalizeServerUrl(value: String): String {
     val trimmed = value.trim().trimEnd('/')
     val withScheme = if (trimmed.startsWith("http://") || trimmed.startsWith("https://")) trimmed else "http://$trimmed"
@@ -276,4 +360,25 @@ private data class WebPairingCompleteRequest(
 @Serializable
 private data class WebPairingError(
     val error: String? = null,
+)
+
+@Serializable
+private data class WebPairingClaimRequest(
+    val code: String,
+)
+
+@Serializable
+private data class WebPairingClaimResponse(
+    val cookie: String = "",
+    val visitorData: String? = null,
+    val dataSyncId: String? = null,
+    val poToken: String? = null,
+    val account: WebPairingAccount? = null,
+)
+
+@Serializable
+private data class WebPairingAccount(
+    val name: String? = null,
+    val email: String? = null,
+    val channelHandle: String? = null,
 )
