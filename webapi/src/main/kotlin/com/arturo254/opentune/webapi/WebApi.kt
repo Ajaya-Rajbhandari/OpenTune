@@ -30,8 +30,10 @@ import io.ktor.http.HttpStatusCode
 import io.ktor.serialization.kotlinx.json.json
 import io.ktor.server.application.Application
 import io.ktor.server.application.ApplicationCall
+import io.ktor.server.application.ApplicationCallPipeline
 import io.ktor.server.application.call
 import io.ktor.server.application.install
+import io.ktor.server.request.path
 import io.ktor.server.cio.EngineMain
 import io.ktor.server.plugins.contentnegotiation.ContentNegotiation
 import io.ktor.server.request.receive
@@ -49,12 +51,16 @@ import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
 import java.io.File
+import java.net.Inet4Address
+import java.net.NetworkInterface
 import java.nio.charset.StandardCharsets
 import java.nio.file.Files
 import java.nio.file.Path
 import java.nio.file.StandardOpenOption
 import java.nio.file.attribute.PosixFilePermission
+import java.security.MessageDigest
 import java.security.SecureRandom
+import java.util.Base64
 import java.util.Locale
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.TimeUnit
@@ -74,6 +80,23 @@ private val webAuthJson = Json {
 }
 private val webAuthSessionPath: Path = resolveWebAuthSessionPath()
 
+private const val ACCESS_TOKEN_HEADER = "X-OpenTune-Token"
+
+/**
+ * Endpoints reachable without the access token.
+ *
+ * `/api/health` exposes nothing. `/api/auth/pairing/complete` is called by the phone, which has no
+ * way to know the token -- the short-lived, single-use pairing code is the credential there, and it
+ * is only ever issued to a request that already presented the token.
+ */
+private val unauthenticatedApiPaths = setOf(
+    "/api/health",
+    "/api/auth/pairing/complete",
+)
+
+private val webAccessTokenPath: Path = resolveWebAccessTokenPath()
+private val webAccessToken: String = resolveWebAccessToken()
+
 private const val MAX_CACHE_ENTRIES = 512
 
 private val catalogCacheTtl = TimeUnit.MINUTES.toMillis(10)
@@ -90,7 +113,7 @@ private class CachedResponse(val value: Any, val expiresAt: Long) {
         get() = System.currentTimeMillis() > expiresAt
 }
 
-private val responseCache = java.util.concurrent.ConcurrentHashMap<String, CachedResponse>()
+private val responseCache = ConcurrentHashMap<String, CachedResponse>()
 
 /**
  * Serves [key] from cache when it is still fresh, otherwise runs [block] and stores the result.
@@ -142,6 +165,7 @@ private val accountCacheTtlMillis = TimeUnit.MINUTES.toMillis(5)
 
 fun Application.module() {
     restorePersistedWebAuthSession()
+    announceAccessUrl()
     verifyRestoredWebAuthSession()
 
     install(ContentNegotiation) {
@@ -152,6 +176,20 @@ fun Application.module() {
                 encodeDefaults = true
             },
         )
+    }
+
+    // Guards the API only. The app shell itself is not sensitive, and gating it would break reload:
+    // the client strips the token from the URL once it has stored it, so a refresh arrives with no
+    // token and would be met with a 401 page instead of the app.
+    intercept(ApplicationCallPipeline.Plugins) {
+        if (!call.request.path().startsWith("/api")) return@intercept
+        if (call.isAccessAuthorized()) return@intercept
+
+        call.respond(
+            HttpStatusCode.Unauthorized,
+            ApiError("Missing or invalid OpenTune access token"),
+        )
+        finish()
     }
 
     routing {
@@ -687,6 +725,109 @@ private fun persistWebAuthSession(session: AuthSessionRequestDto) {
 
 private fun deletePersistedWebAuthSession() {
     runCatching { Files.deleteIfExists(webAuthSessionPath) }
+}
+
+/**
+ * Returns whether the caller may use the API.
+ *
+ * The server binds every interface so a phone can reach it for pairing, which also means anyone else
+ * on the network can. Without this, they could read the account and browse with the signed-in
+ * YouTube session.
+ */
+private fun ApplicationCall.isAccessAuthorized(): Boolean {
+    if (request.path() in unauthenticatedApiPaths) return true
+
+    val presented = request.headers[ACCESS_TOKEN_HEADER]
+        ?: request.queryParameters["token"]
+        ?: return false
+
+    // Compared as raw bytes in constant time: a length-sensitive or short-circuiting comparison
+    // leaks the token a character at a time to anyone who can measure the response.
+    return MessageDigest.isEqual(
+        presented.toByteArray(StandardCharsets.UTF_8),
+        webAccessToken.toByteArray(StandardCharsets.UTF_8),
+    )
+}
+
+private fun resolveWebAccessTokenPath(): Path {
+    val explicit = System.getProperty("opentune.web.token.file")
+        ?: System.getenv("OPENTUNE_WEB_TOKEN_FILE")
+    if (!explicit.isNullOrBlank()) return File(explicit).toPath()
+
+    val home = System.getProperty("user.home")?.takeIf { it.isNotBlank() } ?: "."
+    return File(home, ".config/opentune-web/access-token").toPath()
+}
+
+/**
+ * Loads the access token, generating and persisting one on first run.
+ *
+ * The token is stable across restarts so a bookmarked OpenTune Web URL keeps working; regenerating
+ * per boot would invalidate it every time and make the server unusable from a saved link.
+ */
+private fun resolveWebAccessToken(): String {
+    System.getenv("OPENTUNE_WEB_TOKEN")?.trim()?.takeIf { it.isNotBlank() }?.let { return it }
+
+    runCatching { Files.readString(webAccessTokenPath).trim() }
+        .getOrNull()
+        ?.takeIf { it.isNotBlank() }
+        ?.let { return it }
+
+    val token = generateAccessToken()
+    runCatching {
+        webAccessTokenPath.parent?.let { parent ->
+            Files.createDirectories(parent)
+            setOwnerOnlyPermissions(parent, directory = true)
+        }
+        Files.writeString(
+            webAccessTokenPath,
+            token,
+            StandardCharsets.UTF_8,
+            StandardOpenOption.CREATE,
+            StandardOpenOption.TRUNCATE_EXISTING,
+            StandardOpenOption.WRITE,
+        )
+        setOwnerOnlyPermissions(webAccessTokenPath, directory = false)
+    }
+    return token
+}
+
+/**
+ * Prints the URLs that open OpenTune Web with the token already attached.
+ *
+ * The token is unguessable by design, so it has to be handed to the user somewhere. The LAN URL is
+ * the one that matters: it is what a phone can actually reach for pairing.
+ */
+private fun announceAccessUrl() {
+    val port = System.getenv("PORT")?.toIntOrNull() ?: 8080
+    val hosts = buildList {
+        add("127.0.0.1")
+        addAll(localNetworkAddresses())
+    }
+
+    println("[opentune-web-api] Open OpenTune Web with one of:")
+    hosts.forEach { host ->
+        println("[opentune-web-api]   http://$host:$port/?token=$webAccessToken")
+    }
+    println("[opentune-web-api] Token stored at $webAccessTokenPath")
+}
+
+private fun localNetworkAddresses(): List<String> =
+    runCatching {
+        NetworkInterface.getNetworkInterfaces()
+            .asSequence()
+            .filter { it.isUp && !it.isLoopback }
+            .flatMap { it.inetAddresses.asSequence() }
+            .filterIsInstance<Inet4Address>()
+            .filter { it.isSiteLocalAddress }
+            .map { it.hostAddress }
+            .distinct()
+            .toList()
+    }.getOrDefault(emptyList())
+
+private fun generateAccessToken(): String {
+    val bytes = ByteArray(32)
+    SecureRandom().nextBytes(bytes)
+    return Base64.getUrlEncoder().withoutPadding().encodeToString(bytes)
 }
 
 private fun resolveWebAuthSessionPath(): Path {

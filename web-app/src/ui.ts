@@ -1,4 +1,4 @@
-import { clearAuthSession, loadAuthPairingStatus, loadAuthStatus, loadBrowseData, loadDetail, loadExploreData, loadHomeData, loadLibraryItems, loadLyrics, loadNextQueue, playerMetadata, saveAuthSession, searchSongs, searchSuggestions, setRemoteLike, startAuthPairing } from "./api";
+import { clearAuthSession, getAccessToken, loadAuthPairingStatus, loadAuthStatus, loadBrowseData, loadDetail, loadExploreData, loadHomeData, loadLibraryItems, loadLyrics, loadNextQueue, playerMetadata, saveAuthSession, searchSongs, searchSuggestions, setRemoteLike, startAuthPairing } from "./api";
 import { demoTracks, moods } from "./demo";
 import { AudioPlayer } from "./player";
 import type { AppState, AuthStatusDto, LyricsCalibration, Route, Track } from "./types";
@@ -744,7 +744,7 @@ function extensionLoginText(): string {
   if (state.extensionLoginPending) return "Looking for the OpenTune Login Helper extension...";
   if (state.extensionInstallVisible) return helperUnreachableMessage();
   if (state.auth.loggedIn) return "Your YouTube Music session is already saved. Use this only if playback or browse starts failing.";
-  return "Use the OpenTune Login Helper extension to open Google login and capture the YouTube Music session automatically.";
+  return "Optional. Needs the OpenTune Login Helper extension. If you already use OpenTune on Android, pairing above is simpler.";
 }
 
 async function refreshAuthStatus(): Promise<void> {
@@ -875,6 +875,8 @@ function requestExtensionLogin(): void {
       type: "OPENTUNE_AUTH_REQUEST",
       requestId: extensionAuthRequestId,
       apiBase: window.location.origin,
+      // The helper posts the captured session straight to the API, which is token-protected.
+      accessToken: getAccessToken(),
     },
     window.location.origin,
   );

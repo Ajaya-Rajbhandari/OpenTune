@@ -113,6 +113,7 @@ async function startAuth(message, sender) {
     tabId,
     requestId: String(message.requestId || ""),
     apiBase: resolveApiBase(message.apiBase || sender.url),
+    accessToken: String(message.accessToken || ""),
     expiresAt: Date.now() + AUTH_TIMEOUT_MS,
     inFlight: false,
   };
@@ -142,7 +143,7 @@ async function finishPendingAuth(existingSession) {
       return;
     }
 
-    const status = await postAuthSession(pendingAuth.apiBase, session);
+    const status = await postAuthSession(pendingAuth.apiBase, session, pendingAuth.accessToken);
     notifyResult({ ok: true, status });
     pendingAuth = null;
   } catch (error) {
@@ -219,20 +220,24 @@ async function readAuthFromTab(tabId) {
   return results?.[0]?.result || {};
 }
 
-async function postAuthSession(apiBase, session) {
+async function postAuthSession(apiBase, session, accessToken) {
+  const headers = {
+    Accept: "application/json",
+    "Content-Type": "application/json",
+  };
+  if (accessToken) headers["X-OpenTune-Token"] = accessToken;
+
   const response = await fetch(`${apiBase}/api/auth/session`, {
     method: "POST",
-    headers: {
-      Accept: "application/json",
-      "Content-Type": "application/json",
-    },
+    headers,
     body: JSON.stringify(session),
   });
   const body = await response.json().catch(() => ({}));
   if (!response.ok) {
-    const fallback = response.status === 404
-      ? "OpenTune API auth endpoint was not found. Make sure the Ktor web API is running on port 8080 with the latest code."
-      : `OpenTune API rejected login (${response.status}).`;
+    const fallback = {
+      401: "OpenTune rejected the access token. Reopen OpenTune Web using the link the server printed on startup, then try again.",
+      404: "OpenTune API auth endpoint was not found. Make sure the Ktor web API is running on port 8080 with the latest code.",
+    }[response.status] || `OpenTune API rejected login (${response.status}).`;
     throw new Error(body.error || fallback);
   }
   return body;

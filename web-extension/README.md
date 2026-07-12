@@ -2,36 +2,45 @@
 
 Companion Chromium extension for the OpenTune web app. It opens the normal Google / YouTube Music login page, reads the YouTube Music cookies through extension permissions, and sends the Android-style session values to the local OpenTune API.
 
-## Store Install
+## Prefer pairing with the Android app
 
-Publish this folder to the Chrome Web Store or Edge Add-ons. After approval, build the web app with the published listing URL:
+**This extension is optional, and not published to any store.** Signing in by pairing with the OpenTune Android app is the recommended path: it needs no extension, no store account, and no Google login in the browser, because it reuses the session the phone already has.
 
-```bash
-VITE_OPENTUNE_HELPER_INSTALL_URL="https://chromewebstore.google.com/detail/..." npm run build
-```
+In OpenTune Web, open the account panel and choose **Pair with OpenTune Android**. Use this extension only if you want a browser login without installing the Android app.
 
-The web app opens that URL when a user clicks Login with YouTube Music and the helper is not installed.
+## Install for development
 
-## Package For Store
+1. Open `chrome://extensions` or `edge://extensions`.
+2. Enable Developer mode.
+3. Choose **Load unpacked**.
+4. Select this `web-extension/` folder.
+5. Run OpenTune Web through `./gradlew :webapi:run`, or `npm run dev` in `web-app/`.
+6. Open OpenTune Web using the `?token=...` link the server prints on startup.
+7. Click Login in OpenTune Web, then **Login with YouTube Music**.
 
-Run this from the repository root:
+## Origins
+
+The helper only talks to OpenTune servers on your own network: loopback, plus the private ranges (`10.x`, `192.168.x`, `172.16–31.x`, `.local`). It refuses public hosts, so the YouTube Music session cannot be sent to a third-party server.
+
+Loopback works with no prompt. On a LAN address — which is what a phone can reach, and therefore what pairing uses — the page bridge is not injected by default. **Click the helper's toolbar icon on that tab** to grant the origin; the helper then registers itself there and reloads the page.
+
+## Access token
+
+The OpenTune API requires an access token. The web app captures it from the startup link and hands it to the helper automatically, so there is nothing to configure. If the helper reports a rejected token, reopen OpenTune Web using the link the server printed.
+
+## Publishing (not currently done)
+
+If you ever do publish it, package from the repository root:
 
 ```bash
 cd web-extension
 zip -r opentune-login-helper.zip manifest.json background.js opentune-page.js icons README.md PRIVACY.md
 ```
 
-Upload `opentune-login-helper.zip` to the browser extension store. Do not include generated `.crx` or `.pem` files in git.
+Then build the web app with the listing URL so the install button resolves:
 
-## Install For Development
+```bash
+VITE_OPENTUNE_HELPER_INSTALL_URL="https://chromewebstore.google.com/detail/..." npm run build
+```
 
-1. Open `chrome://extensions` or `edge://extensions`.
-2. Enable Developer mode.
-3. Choose Load unpacked.
-4. Select this `web-extension/` folder.
-5. Run OpenTune web through `./gradlew :webapi:run` or `npm run dev` in `web-app/`.
-6. Click Login in OpenTune web, then Login with YouTube Music.
-
-The extension only allows local OpenTune origins: `localhost` and `127.0.0.1` on ports `8080` and `5173`.
-
-If the production web app is served from a different origin, add that origin to `host_permissions` and `content_scripts.matches` before publishing.
+Do not commit generated `.crx` or `.pem` files; they are gitignored.
