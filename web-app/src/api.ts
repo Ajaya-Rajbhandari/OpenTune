@@ -21,30 +21,73 @@ import type {
 
 const apiBase = import.meta.env.VITE_API_BASE ?? "";
 
+const ACCESS_TOKEN_HEADER = "X-OpenTune-Token";
+const ACCESS_TOKEN_STORAGE_KEY = "opentune.accessToken";
+
+/**
+ * The API is token-protected because the server listens on every interface so a phone can reach it
+ * for pairing. The server prints a URL with the token attached; capture it once, keep it, and strip
+ * it from the address bar so it does not linger in history or get copied into a shared link.
+ */
+function captureAccessToken(): string {
+  const url = new URL(window.location.href);
+  const fromUrl = url.searchParams.get("token")?.trim();
+
+  if (fromUrl) {
+    localStorage.setItem(ACCESS_TOKEN_STORAGE_KEY, fromUrl);
+    url.searchParams.delete("token");
+    window.history.replaceState({}, "", `${url.pathname}${url.search}${url.hash}`);
+    return fromUrl;
+  }
+
+  return localStorage.getItem(ACCESS_TOKEN_STORAGE_KEY)?.trim() || "";
+}
+
+let accessToken = captureAccessToken();
+
+export function hasAccessToken(): boolean {
+  return Boolean(accessToken);
+}
+
+/** The browser helper posts the captured session straight to the API, so it needs the token too. */
+export function getAccessToken(): string {
+  return accessToken;
+}
+
+function withAuthHeaders(init: HeadersInit = {}): Headers {
+  const headers = new Headers(init);
+  headers.set("Accept", "application/json");
+  if (accessToken) headers.set(ACCESS_TOKEN_HEADER, accessToken);
+  return headers;
+}
+
+async function readApiResponse<T>(response: Response): Promise<T> {
+  const body = await response.json().catch(() => ({}));
+  if (response.status === 401) {
+    // A stale token is worse than none: it would keep failing silently on every request.
+    accessToken = "";
+    localStorage.removeItem(ACCESS_TOKEN_STORAGE_KEY);
+    throw new Error(body.error || "This OpenTune server needs an access token. Reopen it using the link the server printed on startup.");
+  }
+  if (!response.ok) throw new Error(body.error || `Request failed (${response.status})`);
+  return body as T;
+}
+
 export async function apiGet<T>(path: string, params: Record<string, string> = {}): Promise<T> {
   const url = new URL(`${apiBase}${path}`, window.location.origin);
   Object.entries(params).forEach(([key, value]) => {
     if (value) url.searchParams.set(key, value);
   });
 
-  const response = await fetch(url, { headers: { Accept: "application/json" } });
-  const body = await response.json().catch(() => ({}));
-  if (!response.ok) throw new Error(body.error || `Request failed (${response.status})`);
-  return body as T;
+  return readApiResponse<T>(await fetch(url, { headers: withAuthHeaders() }));
 }
 
 async function apiSend<T>(path: string, init: RequestInit): Promise<T> {
   const url = new URL(`${apiBase}${path}`, window.location.origin);
-  const headers = new Headers(init.headers);
-  headers.set("Accept", "application/json");
+  const headers = withAuthHeaders(init.headers);
   if (init.body) headers.set("Content-Type", "application/json");
-  const response = await fetch(url, {
-    ...init,
-    headers,
-  });
-  const body = await response.json().catch(() => ({}));
-  if (!response.ok) throw new Error(body.error || `Request failed (${response.status})`);
-  return body as T;
+
+  return readApiResponse<T>(await fetch(url, { ...init, headers }));
 }
 
 export function loadAuthStatus(): Promise<AuthStatusDto> {

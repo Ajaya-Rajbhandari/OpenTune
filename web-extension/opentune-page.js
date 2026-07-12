@@ -15,6 +15,9 @@ window.addEventListener("message", (event) => {
         type: "opentune.startAuth",
         requestId,
         apiBase: message.apiBase || window.location.origin,
+        // The API is token-protected. The page already holds the token, and the extension has no
+        // way to obtain it on its own, so hand it over with the request.
+        accessToken: message.accessToken || "",
       },
       (response) => {
         const error = chrome.runtime.lastError;

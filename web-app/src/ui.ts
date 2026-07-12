@@ -1,4 +1,4 @@
-import { clearAuthSession, loadAuthPairingStatus, loadAuthStatus, loadBrowseData, loadDetail, loadExploreData, loadHomeData, loadLibraryItems, loadLyrics, loadNextQueue, playerMetadata, saveAuthSession, searchSongs, searchSuggestions, setRemoteLike, startAuthPairing } from "./api";
+import { clearAuthSession, getAccessToken, loadAuthPairingStatus, loadAuthStatus, loadBrowseData, loadDetail, loadExploreData, loadHomeData, loadLibraryItems, loadLyrics, loadNextQueue, playerMetadata, saveAuthSession, searchSongs, searchSuggestions, setRemoteLike, startAuthPairing } from "./api";
 import { demoTracks, moods } from "./demo";
 import { AudioPlayer } from "./player";
 import type { AppState, AuthStatusDto, LyricsCalibration, Route, Track } from "./types";
@@ -875,6 +875,8 @@ function requestExtensionLogin(): void {
       type: "OPENTUNE_AUTH_REQUEST",
       requestId: extensionAuthRequestId,
       apiBase: window.location.origin,
+      // The helper posts the captured session straight to the API, which is token-protected.
+      accessToken: getAccessToken(),
     },
     window.location.origin,
   );
