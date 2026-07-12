@@ -1461,7 +1461,8 @@ h1 {
 
 .lyrics-music-buttons {
   display: grid;
-  grid-template-columns: 38px 56px 70px 56px 38px;
+  /* shuffle, prev, play, next, repeat, autoplay */
+  grid-template-columns: 38px 56px 70px 56px 38px 38px;
   align-items: center;
   justify-content: center;
   gap: clamp(6px, 0.8vw, 10px);
@@ -1978,8 +1979,9 @@ input[type="range"] {
 
 .sheet-controls {
   display: grid;
-  grid-template-columns: 44px 44px minmax(64px, 1fr) minmax(78px, 1.25fr) minmax(64px, 1fr) 44px 44px;
-  gap: clamp(6px, 1vw, 10px);
+  /* lyrics, shuffle, prev, play, next, repeat, autoplay, queue */
+  grid-template-columns: 44px 44px minmax(60px, 1fr) minmax(74px, 1.2fr) minmax(60px, 1fr) 44px 44px 44px;
+  gap: clamp(4px, 0.8vw, 10px);
   align-items: center;
   padding: 10px 0 18px;
 }
@@ -2579,7 +2581,7 @@ input[type="range"] {
   }
 
   .sheet-controls {
-    grid-template-columns: repeat(7, minmax(0, 1fr));
+    grid-template-columns: repeat(8, minmax(0, 1fr));
     gap: 4px;
   }
 
