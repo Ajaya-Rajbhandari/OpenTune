@@ -152,6 +152,13 @@ export interface AppState {
   history: string[];
   /** The context that was started, in its natural order: what shuffle draws from and unshuffle restores. */
   queueSource: string[];
+  /**
+   * Whether the queue may be continued with YouTube's autoplay suggestions when it runs out.
+   *
+   * True for a track played on its own, false for a list the user chose: a playlist is the queue and
+   * must not turn into a radio station behind their back.
+   */
+  autoplayRadio: boolean;
   favorites: Set<string>;
   downloaded: Set<string>;
   isPlaying: boolean;

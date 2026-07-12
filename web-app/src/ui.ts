@@ -60,6 +60,7 @@ const state: AppState = {
   queue: [],
   history: [],
   queueSource: [],
+  autoplayRadio: true,
   favorites: new Set(),
   downloaded: new Set(),
   isPlaying: false,
@@ -224,6 +225,7 @@ function saveState(): void {
     queue: state.queue,
     history: state.history,
     queueSource: state.queueSource,
+    autoplayRadio: state.autoplayRadio,
     position: state.position,
     shuffle: state.shuffle,
     repeatMode: state.repeatMode,
@@ -248,6 +250,7 @@ function loadState(): void {
     if (Array.isArray(saved.queue)) state.queue = saved.queue.filter((id: string) => tracks.some((track) => track.id === id));
     if (Array.isArray(saved.history)) state.history = saved.history.filter((id: string) => tracks.some((track) => track.id === id));
     if (Array.isArray(saved.queueSource)) state.queueSource = saved.queueSource.filter((id: string) => tracks.some((track) => track.id === id));
+    if (typeof saved.autoplayRadio === "boolean") state.autoplayRadio = saved.autoplayRadio;
     if (Array.isArray(saved.favorites)) state.favorites = new Set(saved.favorites.filter((id: string) => tracks.some((track) => track.id === id)));
     if (Array.isArray(saved.downloaded)) state.downloaded = new Set(saved.downloaded.filter((id: string) => tracks.some((track) => track.id === id)));
     if (typeof saved.position === "number") state.position = saved.position;
@@ -1459,6 +1462,7 @@ function playLibrary(shuffle = false): void {
  */
 function startQueue(tracks: Track[], shuffle: boolean): void {
   if (shuffle) state.shuffle = true;
+  state.autoplayRadio = false;
 
   const ordered = state.shuffle ? shuffled(tracks) : tracks;
   state.queueSource = tracks.map((track) => track.id);
@@ -1913,7 +1917,9 @@ function renderQueue(): void {
     if (state.route !== "now") renderMessage(qs("#sideQueue"), "Loading Up Next...");
   } else {
     if (state.route !== "now") {
-      const queueIds = state.queue.length ? state.queue : playableKnownTracks().filter((track) => track.id !== state.currentTrackId).slice(0, 5).map((track) => track.id);
+      // Show what will actually play. This used to pad the panel with unrelated tracks from
+      // whatever was loaded, which is exactly what the queue must never do.
+      const queueIds = state.queue;
       if (queueIds.length) qs("#sideQueue").replaceChildren(...queueIds.slice(0, 5).map((id) => queueRow(trackById(id), trackById(id).artist)));
       else renderMessage(qs("#sideQueue"), "Choose music to start a queue");
     }
@@ -1988,8 +1994,15 @@ function queueRow(track: Track, subtitle: string): HTMLElement {
   row.className = "queue-row";
   setArtVars(row, track);
   row.innerHTML = `<div class="thumb"></div><div class="list-text"><strong>${escapeHtml(track.title)}</strong><span>${escapeHtml(subtitle)}</span></div>`;
-  row.addEventListener("click", () => playTrack(track.id));
+  row.addEventListener("click", () => playFromQueue(track.id));
   return row;
+}
+
+/** The list the user is looking at, which is the context a track clicked in it should play from. */
+function currentViewTracks(): Track[] {
+  if (state.route === "detail") return detailPlayableTracks();
+  if (state.route === "library") return libraryItems().filter((track) => track.playable !== false);
+  return [];
 }
 
 function openTrack(trackId: string): void {
@@ -1998,6 +2011,42 @@ function openTrack(trackId: string): void {
     void openDetail(track);
     return;
   }
+  playFromCurrentView(trackId);
+}
+
+/**
+ * Plays [trackId] together with the list it was clicked in, which becomes the queue.
+ *
+ * Without this a click inherited whatever queue happened to be loaded: picking a song out of one
+ * playlist while another was queued played that song and then carried on through the *other*
+ * playlist. A track we cannot place in a list plays alone, with nothing after it to wander into.
+ */
+function playFromCurrentView(trackId: string): void {
+  const view = currentViewTracks();
+  const index = view.findIndex((track) => track.id === trackId);
+
+  if (index === -1) {
+    // Not part of any list we can identify, so let autoplay carry on after it.
+    state.autoplayRadio = true;
+    state.queueSource = [trackId];
+    state.queue = [];
+    state.history = [];
+    playTrack(trackId, { recordHistory: false });
+    return;
+  }
+
+  state.autoplayRadio = false;
+  const rest = view.slice(index + 1).map((track) => track.id);
+  state.queueSource = view.map((track) => track.id);
+  state.queue = state.shuffle ? shuffled(rest) : rest;
+  state.history = [];
+  playTrack(trackId, { recordHistory: false });
+}
+
+/** Clicking something already in the queue jumps to it, dropping what was skipped over. */
+function playFromQueue(trackId: string): void {
+  const index = state.queue.indexOf(trackId);
+  if (index >= 0) state.queue.splice(0, index + 1);
   playTrack(trackId);
 }
 
@@ -2137,8 +2186,6 @@ function playTrack(trackId: string, options: { recordHistory?: boolean } = {}): 
   state.isPlaying = !isRemote;
   state.loadingTrackId = isRemote ? track.id : null;
   state.playbackError = "";
-  const queueSource = state.search.results.includes(trackId) ? state.search.results.map(trackById) : playableKnownTracks();
-  state.queue = queueSource.filter((candidate) => candidate.id !== trackId && candidate.playable !== false).slice(0, 4).map((candidate) => candidate.id);
   render();
   if (isRemote) {
     void loadQueueForTrack(track.id);
@@ -2216,7 +2263,14 @@ async function loadQueueForTrack(trackId: string): Promise<void> {
     const next = await loadNextQueue(trackId, mergeTrack);
     if (state.next.requestId !== requestId || state.currentTrackId !== trackId) return;
     state.next = { status: "ready", title: next.title, error: "", requestId };
-    state.queue = next.trackIds.filter((id) => id !== trackId).slice(0, 24);
+
+    // Autoplay only fills a queue that would otherwise run dry. A list the user chose *is* the
+    // queue: this used to overwrite it with YouTube's suggestions for the current track a moment
+    // after playback began, so a playlist quietly turned into a radio station and "next" left it.
+    if (state.autoplayRadio && !state.queue.length) {
+      state.queue = next.trackIds.filter((id) => id !== trackId).slice(0, 24);
+      state.queueSource = [trackId, ...state.queue];
+    }
   } catch (error) {
     if (state.next.requestId !== requestId) return;
     state.next = { ...state.next, status: "error", error: error instanceof Error ? error.message : "Unable to load Up Next" };
@@ -2288,14 +2342,18 @@ function nextTrack(): void {
     return;
   }
 
-  // Nothing queued: fall back to stepping through whatever is on screen, so a track played on its
-  // own still advances.
-  const playable = playableKnownTracks();
-  if (!playable.length) return;
-  const index = playable.findIndex((track) => track.id === state.currentTrackId);
-  if (index === -1) return;
-  if (state.repeatMode === "off" && index === playable.length - 1) return;
-  playTrack(playable[(index + 1) % playable.length].id);
+  // The queue is done. Stop there. Falling back to "some other track we happen to have loaded" is
+  // what made a one-song playlist run on into an unrelated song, and it is never what was asked for.
+  endPlayback();
+}
+
+/** Reached the end of the queue: hold on the last track rather than starting something else. */
+function endPlayback(): void {
+  player.audio.pause();
+  state.isPlaying = false;
+  state.loadingTrackId = null;
+  renderPlayer();
+  saveState();
 }
 
 function previousTrack(): void {
