@@ -55,6 +55,19 @@ export class AudioPlayer {
   }
 
   async play(track: Track): Promise<void> {
+    try {
+      await this.attempt(track);
+    } catch (error) {
+      // A stream URL is signed and time-limited, and the one we cached may have been resolved
+      // under a session that has since gone away. Retrying the same dead URL forever is what turned
+      // a recoverable hiccup into "no supported source" on every track, so throw the cached URL
+      // away and resolve a fresh one before giving up.
+      if (!this.streamCache.delete(track.id)) throw error;
+      await this.attempt(track);
+    }
+  }
+
+  private async attempt(track: Track): Promise<void> {
     const token = ++this.playbackToken;
     const source = await this.resolveSource(track);
     if (token !== this.playbackToken) return;
@@ -97,8 +110,10 @@ export class AudioPlayer {
     track.duration = player.durationSeconds || track.duration;
     track.thumbnail = player.thumbnail || track.thumbnail;
 
-    const selectedFormat = player.formats.find((format) => format.url && this.audio.canPlayType(format.mimeType))
-      || player.formats.find((format) => format.url);
+    // Only formats the browser has actually said it can decode. The old fallback took the first
+    // format with a URL even when canPlayType() had just rejected it, which hands the audio element
+    // a codec it cannot play and reports it as a stream failure.
+    const selectedFormat = player.formats.find((format) => format.url && this.audio.canPlayType(format.mimeType));
     if (!selectedFormat?.url) throw new Error("No browser-playable stream URL returned");
 
     const source = {
