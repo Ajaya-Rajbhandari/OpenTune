@@ -92,6 +92,7 @@ private const val ACCESS_TOKEN_HEADER = "X-OpenTune-Token"
 private val unauthenticatedApiPaths = setOf(
     "/api/health",
     "/api/auth/pairing/complete",
+    "/api/auth/pairing/claim",
 )
 
 private val webAccessTokenPath: Path = resolveWebAccessTokenPath()
@@ -282,6 +283,52 @@ fun Application.module() {
                         val status = webAuthStatus()
                         pendingPairings[code] = pairing.copy(authStatus = status)
                         call.respond(PairingCompleteResponseDto(ok = true, status = status))
+                    }
+
+                    /**
+                     * Sends the web server's signed-in session *to* the phone.
+                     *
+                     * The mirror of /complete, for a phone that has no login yet: rather than the
+                     * phone pushing credentials up, it redeems a code to pull them down, so a fresh
+                     * install never has to do a Google login of its own.
+                     *
+                     * This hands out the YouTube session, so unlike every other pairing endpoint it
+                     * gives away credentials rather than accepting them. Two things keep that
+                     * contained: a code can only be minted by a caller that already holds the API
+                     * token, and the code is consumed here -- a credential-dispensing code must not
+                     * be replayable.
+                     */
+                    post("/claim") {
+                        pruneExpiredPairings()
+                        val request = call.receive<PairingClaimRequestDto>()
+                        val code = normalizePairingCode(request.code)
+                        val pairing = pendingPairings[code]
+                        if (pairing == null || pairing.isExpired) {
+                            if (pairing?.isExpired == true) pendingPairings.remove(code)
+                            call.respond(HttpStatusCode.NotFound, ApiError("Pairing code expired or not found"))
+                            return@post
+                        }
+
+                        val session = currentWebAuthSession()
+                        if (session == null) {
+                            call.respond(
+                                HttpStatusCode.Conflict,
+                                ApiError("OpenTune Web is not signed in to YouTube Music, so it has no session to send."),
+                            )
+                            return@post
+                        }
+
+                        pendingPairings.remove(code)
+
+                        call.respond(
+                            PairingClaimResponseDto(
+                                cookie = session.cookie,
+                                visitorData = session.visitorData,
+                                dataSyncId = session.dataSyncId,
+                                poToken = session.poToken,
+                                account = webAuthStatus().account,
+                            ),
+                        )
                     }
                 }
 
@@ -576,6 +623,20 @@ private suspend fun ApplicationCall.respondApiError(error: Throwable) {
     respond(
         HttpStatusCode.BadGateway,
         ApiError(error.message?.takeIf { it.isNotBlank() } ?: "Request failed"),
+    )
+}
+
+/** The session this server is currently signed in with, or null if it has no usable login to hand over. */
+private fun currentWebAuthSession(): AuthSessionRequestDto? {
+    val state = YouTube.authState
+    val cookie = state.cookie.normalizedAuthValue() ?: return null
+    if ("SAPISID" !in parseCookieString(cookie)) return null
+
+    return AuthSessionRequestDto(
+        cookie = cookie,
+        visitorData = state.visitorData.normalizedAuthValue(),
+        dataSyncId = state.dataSyncId.normalizedAuthValue(),
+        poToken = state.poToken.normalizedAuthValue(),
     )
 }
 
@@ -1503,6 +1564,20 @@ private data class PairingCompleteRequestDto(
 private data class PairingCompleteResponseDto(
     val ok: Boolean,
     val status: AuthStatusDto,
+)
+
+@Serializable
+private data class PairingClaimRequestDto(
+    val code: String,
+)
+
+@Serializable
+private data class PairingClaimResponseDto(
+    val cookie: String,
+    val visitorData: String? = null,
+    val dataSyncId: String? = null,
+    val poToken: String? = null,
+    val account: WebAccountDto? = null,
 )
 
 @Serializable
