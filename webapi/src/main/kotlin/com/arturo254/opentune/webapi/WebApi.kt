@@ -741,13 +741,23 @@ private fun Throwable.isConfirmedDeadSession(): Boolean = isUnauthorizedResponse
  * A session that fails verification is rolled back, so submitting bad credentials never disturbs
  * a session that was already working.
  */
+/**
+ * How the server asks YouTube who is signed in.
+ *
+ * A seam, not indirection for its own sake. This one call decides whether a stored session is kept
+ * or destroyed, and while it reached straight for the network none of that logic could be tested --
+ * which is how the code that silently deleted a working login went unnoticed. Tests replace it to
+ * drive the outcomes that matter: a transient failure, a genuine rejection, and a healthy account.
+ */
+internal var accountInfoSource: suspend () -> Result<AccountInfo> = { YouTube.accountInfo() }
+
 private suspend fun applyVerifiedWebAuthSession(session: AuthSessionRequestDto): Result<Unit> {
     val previousAuthState = YouTube.authState
     val previousUseLoginForBrowse = YouTube.useLoginForBrowse
     val previousAccount = cachedWebAccount
 
     applyWebAuthSession(session)
-    return YouTube.accountInfo()
+    return accountInfoSource()
         .onSuccess { cacheWebAccount(it.toWebAccountDto()) }
         .onFailure {
             YouTube.authState = previousAuthState
@@ -764,7 +774,7 @@ private suspend fun applyVerifiedWebAuthSession(session: AuthSessionRequestDto):
 private fun verifyRestoredWebAuthSession() {
     if (!YouTube.authState.hasLoginCookie) return
     val result = runBlocking {
-        withTimeoutOrNull(authVerifyTimeoutMillis) { YouTube.accountInfo() }
+        withTimeoutOrNull(authVerifyTimeoutMillis) { accountInfoSource() }
     } ?: return
 
     result
@@ -965,7 +975,7 @@ private suspend fun webAuthStatus(refreshAccount: Boolean = false): AuthStatusDt
     if (!loggedIn) {
         cacheWebAccount(null)
     } else if (refreshAccount || cachedWebAccount == null || isAccountCacheStale()) {
-        YouTube.accountInfo()
+        accountInfoSource()
             .onSuccess { cacheWebAccount(it.toWebAccountDto()) }
             .onFailure { error ->
                 accountError = error.message ?: error::class.simpleName
