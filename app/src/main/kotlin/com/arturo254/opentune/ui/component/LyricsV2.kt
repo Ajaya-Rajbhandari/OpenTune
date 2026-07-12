@@ -165,6 +165,7 @@ private val HEAD_LYRICS_ENTRY = LyricsEntry(time = 0L, text = "")
 @Composable
 fun LyricsV2(
     sliderPositionProvider: () -> Long?,
+    lyricsSyncOffset: Int = 0,
     modifier: Modifier = Modifier,
 ) {
     val playerConnection = LocalPlayerConnection.current ?: return
@@ -345,7 +346,7 @@ fun LyricsV2(
     var currentLineIndex by remember { mutableIntStateOf(0) }
 
     // Frame-accurate position loop
-    LaunchedEffect(entriesWithWords, isSynced) {
+    LaunchedEffect(entriesWithWords, isSynced, lyricsSyncOffset) {
         if (!isSynced || entriesWithWords.isEmpty()) return@LaunchedEffect
         while (isActive) {
             val sliderPos = sliderPositionProvider()
@@ -353,7 +354,7 @@ fun LyricsV2(
 
             // Add a visual tuning offset so animations feel instantly responsive and perfectly land on beat
             val visualTuningOffsetMs = 150L
-            currentPositionMs = pos + leadMs + visualTuningOffsetMs
+            currentPositionMs = (pos + lyricsSyncOffset.toLong() + leadMs + visualTuningOffsetMs).coerceAtLeast(0L)
 
             currentLineIndex = findCurrentLineIndex(entriesWithWords, currentPositionMs, 0L)
             delay(16L) // ~60fps polling

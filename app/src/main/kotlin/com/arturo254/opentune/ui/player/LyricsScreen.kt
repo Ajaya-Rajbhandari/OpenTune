@@ -384,7 +384,8 @@ fun LyricsScreen(
                             ) {
                                 if (useLyricsV2) {
                                     LyricsV2(
-                                        sliderPositionProvider = { sliderPosition }
+                                        sliderPositionProvider = { sliderPosition },
+                                        lyricsSyncOffset = lyricsSyncOffset,
                                     )
                                 } else {
                                     Lyrics(
@@ -676,7 +677,8 @@ fun LyricsScreen(
                     ) {
                         if (useLyricsV2) {
                             LyricsV2(
-                                sliderPositionProvider = { sliderPosition }
+                                sliderPositionProvider = { sliderPosition },
+                                lyricsSyncOffset = lyricsSyncOffset,
                             )
                         } else {
                             Lyrics(
