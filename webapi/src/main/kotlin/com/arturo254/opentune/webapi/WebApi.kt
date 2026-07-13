@@ -36,6 +36,7 @@ import io.ktor.server.application.install
 import io.ktor.server.request.path
 import io.ktor.server.cio.EngineMain
 import io.ktor.server.plugins.contentnegotiation.ContentNegotiation
+import io.ktor.server.plugins.origin
 import io.ktor.server.request.receive
 import io.ktor.http.HttpHeaders
 import io.ktor.server.response.header
@@ -70,6 +71,7 @@ import java.util.Base64
 import java.util.Locale
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicReference
 
 fun main(args: Array<String>) = EngineMain.main(args)
 
@@ -106,7 +108,25 @@ private val unauthenticatedApiPaths = setOf(
 )
 
 private val webAccessTokenPath: Path = resolveWebAccessTokenPath()
-private val webAccessToken: String = resolveWebAccessToken()
+
+// Held in an AtomicReference so the token can be rotated on a running server: a leaked URL is
+// answered by replacing the token, not by restarting and dropping the signed-in session with it.
+private val webAccessTokenRef = AtomicReference(resolveWebAccessToken())
+private val webAccessToken: String get() = webAccessTokenRef.get()
+
+/** True when the token is pinned by the environment, where rotating the in-memory copy would be a lie: a restart would read the env value straight back. */
+private val webAccessTokenIsEnvPinned: Boolean
+    get() = !System.getenv("OPENTUNE_WEB_TOKEN")?.trim().isNullOrBlank()
+
+// Throttles wrong-token attempts. The token is 256 bits and cannot realistically be guessed, but on
+// the public internet an open endpoint still invites a flood of tries that fills the logs and burns
+// CPU on constant-time comparisons; this caps that. Keyed by the caller's real address so one abuser
+// cannot lock everyone out -- see clientKey().
+private val authRateLimiter = AuthRateLimiter(
+    maxFailures = 15,
+    windowMillis = TimeUnit.MINUTES.toMillis(5),
+    blockMillis = TimeUnit.MINUTES.toMillis(5),
+)
 
 private const val MAX_CACHE_ENTRIES = 512
 
@@ -203,8 +223,25 @@ fun Application.module() {
     // token and would be met with a 401 page instead of the app.
     intercept(ApplicationCallPipeline.Plugins) {
         if (!call.request.path().startsWith("/api")) return@intercept
-        if (call.isAccessAuthorized()) return@intercept
+        // Open endpoints (health, pairing completion) take no token and so cannot fail auth; they are
+        // never throttled, or a signed-out phone completing a pairing could be locked out.
+        if (call.request.path() in unauthenticatedApiPaths) return@intercept
 
+        val clientKey = call.clientKey()
+        val now = System.currentTimeMillis()
+        authRateLimiter.retryAfterSeconds(clientKey, now)?.let { retryAfter ->
+            call.response.header(HttpHeaders.RetryAfter, retryAfter.toString())
+            call.respond(HttpStatusCode.TooManyRequests, ApiError("Too many failed attempts. Try again later."))
+            finish()
+            return@intercept
+        }
+
+        if (call.isAccessAuthorized()) {
+            authRateLimiter.recordSuccess(clientKey)
+            return@intercept
+        }
+
+        authRateLimiter.recordFailure(clientKey, now)
         call.respond(
             HttpStatusCode.Unauthorized,
             ApiError("Missing or invalid OpenTune access token"),
@@ -226,6 +263,21 @@ fun Application.module() {
             route("/auth") {
                 get("/status") {
                     call.respond(webAuthStatus())
+                }
+
+                post("/token/rotate") {
+                    // Reachable only with the current token (the gate already ran), so rotating is
+                    // something only whoever holds the link today can do -- and it hands back the new
+                    // one so the caller can keep going without a round trip through the file.
+                    val rotated = rotateAccessToken()
+                    if (rotated == null) {
+                        call.respond(
+                            HttpStatusCode.Conflict,
+                            ApiError("The access token is fixed by the OPENTUNE_WEB_TOKEN environment variable and cannot be rotated at runtime."),
+                        )
+                        return@post
+                    }
+                    call.respond(TokenRotateResponseDto(token = rotated))
                 }
 
                 route("/pairing") {
@@ -925,6 +977,76 @@ private fun resolveWebSpeedDialPath(): Path {
 }
 
 /**
+ * Counts wrong-token attempts per caller and blocks a caller that crosses [maxFailures] within
+ * [windowMillis], for [blockMillis].
+ *
+ * A correct token clears the caller's count, so an honest user who fat-fingers a URL once is never
+ * held against a later valid request. The window slides: a burst that stops is forgotten rather than
+ * held forever. Bounded by eviction of stale buckets so a stream of distinct addresses cannot grow
+ * the map without limit.
+ */
+private class AuthRateLimiter(
+    private val maxFailures: Int,
+    private val windowMillis: Long,
+    private val blockMillis: Long,
+) {
+    private class Bucket(var windowStart: Long, var failures: Int, var blockedUntil: Long)
+
+    private val buckets = ConcurrentHashMap<String, Bucket>()
+
+    /** Retry-After in seconds if [key] is currently blocked, or null if it may proceed. */
+    @Synchronized
+    fun retryAfterSeconds(key: String, now: Long): Long? {
+        evictStale(now)
+        val bucket = buckets[key] ?: return null
+        if (now >= bucket.blockedUntil) return null
+        return ((bucket.blockedUntil - now) / 1000).coerceAtLeast(1)
+    }
+
+    @Synchronized
+    fun recordFailure(key: String, now: Long) {
+        val bucket = buckets.getOrPut(key) { Bucket(now, 0, 0) }
+        if (now - bucket.windowStart > windowMillis) {
+            bucket.windowStart = now
+            bucket.failures = 0
+        }
+        bucket.failures++
+        if (bucket.failures >= maxFailures) {
+            bucket.blockedUntil = now + blockMillis
+        }
+    }
+
+    @Synchronized
+    fun recordSuccess(key: String) {
+        buckets.remove(key)
+    }
+
+    @Synchronized
+    fun clear() {
+        buckets.clear()
+    }
+
+    private fun evictStale(now: Long) {
+        if (buckets.size < 1024) return
+        buckets.entries.removeIf { (_, bucket) ->
+            now >= bucket.blockedUntil && now - bucket.windowStart > windowMillis
+        }
+    }
+}
+
+/**
+ * The caller's address, for rate-limiting.
+ *
+ * Behind a tunnel (Cloudflare) or any reverse proxy the socket peer is always the proxy, so every
+ * caller would share one bucket and one abuser would lock out the house. Cloudflare passes the real
+ * client address in CF-Connecting-IP; trust it when present and fall back to the socket peer for a
+ * direct LAN connection.
+ */
+private fun ApplicationCall.clientKey(): String =
+    request.headers["CF-Connecting-IP"]?.trim()?.takeIf { it.isNotBlank() }
+        ?: request.origin.remoteHost
+
+/**
  * Returns whether the caller may use the API.
  *
  * The server binds every interface so a phone can reach it for pairing, which also means anyone else
@@ -970,6 +1092,12 @@ private fun resolveWebAccessToken(): String {
         ?.let { return it }
 
     val token = generateAccessToken()
+    persistAccessToken(token)
+    return token
+}
+
+/** Writes the access token to its file, owner-readable only, the same way the auth session is stored. */
+private fun persistAccessToken(token: String) {
     runCatching {
         webAccessTokenPath.parent?.let { parent ->
             Files.createDirectories(parent)
@@ -985,8 +1113,27 @@ private fun resolveWebAccessToken(): String {
         )
         setOwnerOnlyPermissions(webAccessTokenPath, directory = false)
     }
+}
+
+/**
+ * Replaces the access token with a fresh one, in memory and on disk, and returns it.
+ *
+ * This is how a leaked link is made harmless: every old URL stops working the instant this returns.
+ * Refused when the token is pinned by the environment, because the new value would not survive a
+ * restart -- the env var would win -- and a token that silently reverts is worse than none.
+ */
+private fun rotateAccessToken(): String? {
+    if (webAccessTokenIsEnvPinned) return null
+    val token = generateAccessToken()
+    persistAccessToken(token)
+    webAccessTokenRef.set(token)
     return token
 }
+
+// Test hooks: the token and the rate limiter are process-global and shared across test classes in one
+// JVM, so a test that rotates the token or trips the limiter must be able to hand back a clean slate.
+internal fun setAccessTokenForTest(token: String) = webAccessTokenRef.set(token)
+internal fun resetAuthRateLimiterForTest() = authRateLimiter.clear()
 
 /**
  * Prints the URLs that open OpenTune Web with the token already attached.
@@ -1854,6 +2001,11 @@ private fun BrowseEndpoint?.toDto() = this?.let {
 @Serializable
 private data class ApiError(
     val error: String,
+)
+
+@Serializable
+private data class TokenRotateResponseDto(
+    val token: String,
 )
 
 @Serializable
