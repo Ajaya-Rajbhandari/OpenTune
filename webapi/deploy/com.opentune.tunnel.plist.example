@@ -1,0 +1,40 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  launchd job that keeps the Cloudflare named tunnel running alongside the server.
+
+  Only needed for the permanent, domain-backed setup. Requires cloudflared-config.example.yml to be
+  filled in and saved as ~/.cloudflared/config.yml (or point -config at it below).
+
+  Setup:
+    1. Edit the REPLACE_ME values.
+    2. Copy to ~/Library/LaunchAgents/com.opentune.tunnel.plist
+    3. launchctl load -w ~/Library/LaunchAgents/com.opentune.tunnel.plist
+  Logs: tail -f ~/Library/Logs/opentune-tunnel.log
+-->
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.opentune.tunnel</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <!-- `which cloudflared` -- Homebrew installs it here on Apple Silicon. -->
+        <string>/opt/homebrew/bin/cloudflared</string>
+        <string>tunnel</string>
+        <string>--no-autoupdate</string>
+        <string>run</string>
+        <string>REPLACE_ME_TUNNEL_NAME</string>
+    </array>
+
+    <key>RunAtLoad</key>
+    <true/>
+    <key>KeepAlive</key>
+    <true/>
+
+    <key>StandardOutPath</key>
+    <string>REPLACE_ME_HOME/Library/Logs/opentune-tunnel.log</string>
+    <key>StandardErrorPath</key>
+    <string>REPLACE_ME_HOME/Library/Logs/opentune-tunnel.log</string>
+</dict>
+</plist>

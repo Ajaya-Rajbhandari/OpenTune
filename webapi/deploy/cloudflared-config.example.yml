@@ -1,0 +1,21 @@
+# Cloudflare named-tunnel config, for a stable public URL like https://music.yourdomain.com.
+#
+# This is the permanent setup (step 2 in DEPLOYMENT.md). It needs a domain you have added to
+# Cloudflare and a one-time `cloudflared tunnel login`. For a no-domain trial, skip all of this and
+# use the quick tunnel described in DEPLOYMENT.md instead.
+#
+# Setup:
+#   cloudflared tunnel login                       # authorises cloudflared with your Cloudflare account
+#   cloudflared tunnel create opentune             # creates the tunnel + a credentials json; note the UUID
+#   cloudflared tunnel route dns opentune music.yourdomain.com
+#   # then fill in the values below and run: cloudflared tunnel run opentune
+
+tunnel: REPLACE_ME_TUNNEL_UUID
+credentials-file: REPLACE_ME_HOME/.cloudflared/REPLACE_ME_TUNNEL_UUID.json
+
+ingress:
+  # Your hostname -> the local server. The token still guards the API; the tunnel only carries traffic.
+  - hostname: music.yourdomain.com
+    service: http://127.0.0.1:8080
+  # Everything else is refused.
+  - service: http_status:404
