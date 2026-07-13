@@ -2,10 +2,16 @@
 <!--
   launchd job that keeps the OpenTune web API running and restarts it after a crash or reboot.
 
+  It runs the STAGED launcher (~/opentune/server/...), not the repo, because launchd agents cannot
+  read files under ~/Desktop, ~/Documents or ~/Downloads on macOS. Run webapi/deploy/stage.sh to
+  create that copy. If your repo is not under a protected folder, you may point ProgramArguments at
+  REPO/webapi/build/install/webapi/bin/webapi directly and drop OPENTUNE_WEB_ROOT.
+
   Setup:
-    1. Edit the REPLACE_ME paths below (repo location, your username, a JDK 21 home).
-    2. Copy to ~/Library/LaunchAgents/com.opentune.web.plist
-    3. launchctl load -w ~/Library/LaunchAgents/com.opentune.web.plist
+    1. build.sh, then stage.sh (creates ~/opentune).
+    2. Edit the REPLACE_ME values below.
+    3. Copy to ~/Library/LaunchAgents/com.opentune.web.plist
+    4. launchctl load -w ~/Library/LaunchAgents/com.opentune.web.plist
   Stop:   launchctl unload -w ~/Library/LaunchAgents/com.opentune.web.plist
   Logs:   tail -f ~/Library/Logs/opentune-web.log
 -->
@@ -17,18 +23,23 @@
 
     <key>ProgramArguments</key>
     <array>
-        <string>/bin/sh</string>
-        <string>REPLACE_ME/OpenTune/webapi/deploy/run.sh</string>
+        <string>REPLACE_ME_HOME/opentune/server/bin/webapi</string>
     </array>
 
     <key>EnvironmentVariables</key>
     <dict>
         <!-- A Java 21+ runtime. Homebrew: /opt/homebrew/opt/openjdk@21. Or the Android Studio JBR. -->
-        <key>OPENTUNE_JAVA_HOME</key>
+        <key>JAVA_HOME</key>
         <string>REPLACE_ME_JDK21_HOME</string>
         <key>PORT</key>
         <string>8080</string>
+        <!-- The staged web bundle, so the server does not reach back into the repo. -->
+        <key>OPENTUNE_WEB_ROOT</key>
+        <string>REPLACE_ME_HOME/opentune/web-dist</string>
     </dict>
+
+    <key>WorkingDirectory</key>
+    <string>REPLACE_ME_HOME/opentune</string>
 
     <!-- Keep it running and bring it back on login/reboot. -->
     <key>RunAtLoad</key>
