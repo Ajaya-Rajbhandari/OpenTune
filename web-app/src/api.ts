@@ -299,6 +299,21 @@ export function playerMetadata(videoId: string): Promise<PlayerResponseDto> {
   return apiGet<PlayerResponseDto>(`/api/player/${encodeURIComponent(videoId)}`);
 }
 
+/**
+ * The URL an <audio> element plays: the server's stream proxy, not the raw googlevideo URL.
+ *
+ * YouTube signs each stream URL to the IP that asked for it, and that is the server, not the browser
+ * -- so the browser must fetch through the server or it plays only when the two share an address. An
+ * <audio> element cannot send headers, so the access token rides in the query string, the same way
+ * the startup link carries it.
+ */
+export function streamUrl(videoId: string, itag: number): string {
+  const url = new URL(`${apiBase}/api/stream/${encodeURIComponent(videoId)}`, window.location.origin);
+  url.searchParams.set("itag", String(itag));
+  if (accessToken) url.searchParams.set("token", accessToken);
+  return url.toString();
+}
+
 export async function loadDetail(kind: "album" | "playlist", id: string, mergeTrack: (track: Track) => Track): Promise<{ item: Track; trackIds: string[] }> {
   const path = kind === "album" ? `/api/album/${encodeURIComponent(id)}` : `/api/playlist/${encodeURIComponent(id)}`;
   const detail = await apiGet<DetailResponseDto>(path);

@@ -37,8 +37,11 @@ import io.ktor.server.request.path
 import io.ktor.server.cio.EngineMain
 import io.ktor.server.plugins.contentnegotiation.ContentNegotiation
 import io.ktor.server.request.receive
+import io.ktor.http.HttpHeaders
+import io.ktor.server.response.header
 import io.ktor.server.response.respond
 import io.ktor.server.response.respondFile
+import io.ktor.server.response.respondOutputStream
 import io.ktor.server.routing.delete
 import io.ktor.server.routing.get
 import io.ktor.server.routing.post
@@ -115,6 +118,12 @@ private val playerCacheMaxTtl = TimeUnit.MINUTES.toMillis(30)
 
 /** Short: this runs before playback can start, and a client that cannot serve should be abandoned fast. */
 private val streamProbeTimeoutMillis = TimeUnit.SECONDS.toMillis(6).toInt()
+
+/** Longer than the connect probe: once bytes are flowing, a slow network is not a reason to give up. */
+private val streamProxyReadTimeoutMillis = TimeUnit.SECONDS.toMillis(30).toInt()
+
+/** Relay buffer for proxied audio. Large enough to keep the pipe full, small enough to start fast. */
+private const val streamProxyChunkBytes = 64 * 1024
 
 /** Retire a stream URL well before YouTube does, so a cached one is never handed out dead. */
 private val playerCacheSafetyMargin = TimeUnit.MINUTES.toMillis(5)
@@ -600,6 +609,16 @@ fun Application.module() {
                 call.respondApi {
                     cachedPlayerResponse(videoId)
                 }
+            }
+
+            get("/stream/{videoId}") {
+                val videoId = call.parameters["videoId"]?.trim().orEmpty()
+                if (videoId.isBlank()) {
+                    call.respond(HttpStatusCode.BadRequest, ApiError("Missing video id"))
+                    return@get
+                }
+
+                proxyStream(call, videoId, call.request.queryParameters["itag"]?.toIntOrNull())
             }
         }
 
@@ -1507,6 +1526,91 @@ private suspend fun resolvePlayer(videoId: String): ResolvedPlayer {
     }
 
     return firstPlayableResponse ?: firstResponse ?: error("No player response returned")
+}
+
+/**
+ * Streams a track's audio through the server instead of handing the browser a googlevideo URL.
+ *
+ * The stream URLs YouTube signs are bound to the IP that asked for them -- `ip` is part of the signed
+ * `sparams` -- so a URL resolved by this server plays only from this server's address. That is why the
+ * web app worked when the browser sat on the same network as the server and 403'd from anywhere else:
+ * a phone on mobile data, or the server moved off the home network. Fetching the bytes here and
+ * relaying them keeps every request coming from the one address YouTube signed for.
+ *
+ * The browser's Range header is forwarded and the upstream's Range answer passed straight back, so
+ * seeking still works and the audio element gets the Content-Range and length it needs.
+ */
+private suspend fun proxyStream(call: ApplicationCall, videoId: String, itag: Int?) {
+    val player = runCatching { cachedPlayerResponse(videoId) }.getOrElse { error ->
+        respondStreamError(call, HttpStatusCode.BadGateway, "Could not resolve stream", error)
+        return
+    }
+
+    if (player.playabilityStatus != "OK") {
+        respondStreamError(call, HttpStatusCode.NotFound, player.playabilityReason ?: "Playback unavailable", null)
+        return
+    }
+
+    // Honour the exact format the browser chose -- it ranked them for what it can actually decode --
+    // and fall back to the best available only when no itag was named or the named one is gone.
+    val format = itag?.let { wanted -> player.formats.firstOrNull { it.itag == wanted && it.url != null } }
+        ?: player.formats.firstOrNull { it.url != null }
+    val upstreamUrl = format?.url
+    if (upstreamUrl == null) {
+        respondStreamError(call, HttpStatusCode.NotFound, "No playable stream for this track", null)
+        return
+    }
+
+    withContext(Dispatchers.IO) {
+        val connection = (URL(upstreamUrl).openConnection() as HttpURLConnection).apply {
+            requestMethod = "GET"
+            connectTimeout = streamProbeTimeoutMillis
+            readTimeout = streamProxyReadTimeoutMillis
+            instanceFollowRedirects = true
+            // Range makes seeking work: the browser asks for a byte window, and the answer must be the
+            // matching 206 with a Content-Range, not the whole file from zero.
+            call.request.headers[HttpHeaders.Range]?.let { setRequestProperty("Range", it) }
+        }
+
+        val status = try {
+            connection.responseCode
+        } catch (error: Throwable) {
+            connection.disconnect()
+            respondStreamError(call, HttpStatusCode.BadGateway, "Upstream stream unreachable", error)
+            return@withContext
+        }
+
+        if (status !in 200..299) {
+            connection.disconnect()
+            // A 403 here is the signed URL being refused -- usually a session that expired out from
+            // under the cached resolution. Drop the cache so the next play resolves afresh.
+            if (status == 403 || status == 401) invalidateCachePrefix("player:$videoId")
+            respondStreamError(call, HttpStatusCode.BadGateway, "Upstream returned $status", null)
+            return@withContext
+        }
+
+        connection.contentType?.let { call.response.header(HttpHeaders.ContentType, it) }
+        connection.getHeaderField("Content-Range")?.let { call.response.header(HttpHeaders.ContentRange, it) }
+        call.response.header(HttpHeaders.AcceptRanges, "bytes")
+        val length = connection.getHeaderField("Content-Length")?.toLongOrNull()
+
+        val ktorStatus = if (status == 206) HttpStatusCode.PartialContent else HttpStatusCode.OK
+        try {
+            call.respondOutputStream(status = ktorStatus, contentLength = length) {
+                connection.inputStream.use { upstream -> upstream.copyTo(this, streamProxyChunkBytes) }
+            }
+        } catch (_: Throwable) {
+            // The listener skipped or closed the tab mid-stream; the write channel is gone. Nothing to
+            // report -- this is the normal end of a proxied stream, not a failure.
+        } finally {
+            connection.disconnect()
+        }
+    }
+}
+
+private suspend fun respondStreamError(call: ApplicationCall, status: HttpStatusCode, message: String, error: Throwable?) {
+    System.err.println("[opentune-web-api] stream proxy: $message${error?.let { ": ${it.message}" } ?: ""}")
+    if (!call.response.isCommitted) call.respond(status, ApiError(message))
 }
 
 /**
