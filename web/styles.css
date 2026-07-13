@@ -2157,7 +2157,8 @@ input[type="range"] {
 }
 
 .account-extension-card,
-.account-pairing-card {
+.account-pairing-card,
+.account-own-account-card {
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto;
   gap: 14px;
@@ -2171,17 +2172,30 @@ input[type="range"] {
 }
 
 .account-extension-card div,
-.account-pairing-card div {
+.account-pairing-card div,
+.account-own-account-card div {
   display: grid;
   gap: 5px;
   min-width: 0;
 }
 
 .account-extension-card span,
-.account-pairing-card span {
+.account-pairing-card span,
+.account-own-account-card span {
   color: var(--muted);
   font-size: 13px;
   line-height: 1.4;
+}
+
+/* A quieter, neutral card: it points people away from this shared login to their own device, so it
+   should read as guidance, not as another login button competing for attention. */
+.account-own-account-card {
+  border-color: var(--line);
+  background: rgba(255, 255, 255, 0.04);
+}
+
+.account-own-account-card .account-primary {
+  white-space: nowrap;
 }
 
 .account-pairing-card {
