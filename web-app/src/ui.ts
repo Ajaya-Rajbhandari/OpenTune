@@ -1311,33 +1311,33 @@ function setHomeSectionTitles(primary: string, secondary: string, tertiary: stri
   setText("#keepListeningTitle", tertiary);
 }
 
-function quickPickRow(track: Track): HTMLElement {
+function quickPickRow(track: Track, _index?: number, section?: Track[]): HTMLElement {
   const row = document.createElement("button");
   row.type = "button";
   row.className = "quick-pick-row";
   setArtVars(row, track);
   row.innerHTML = `<div class="thumb"></div><div class="list-text"><strong>${escapeHtml(track.title)}</strong><span>${escapeHtml(trackSubtitle(track))}</span></div><span class="more-button" aria-hidden="true">•••</span>`;
-  row.addEventListener("click", () => openTrack(track.id));
+  row.addEventListener("click", () => openTrack(track.id, section));
   return row;
 }
 
-function speedCard(track: Track): HTMLElement {
+function speedCard(track: Track, _index?: number, section?: Track[]): HTMLElement {
   const card = document.createElement("button");
   card.type = "button";
   card.className = "speed-card";
   setArtVars(card, track);
   card.innerHTML = `<strong>${escapeHtml(track.title)}</strong>`;
-  card.addEventListener("click", () => openTrack(track.id));
+  card.addEventListener("click", () => openTrack(track.id, section));
   return card;
 }
 
-function itemCard(track: Track): HTMLElement {
+function itemCard(track: Track, _index?: number, section?: Track[]): HTMLElement {
   const card = document.createElement("button");
   card.type = "button";
   card.className = "item-card";
   setArtVars(card, track);
   card.innerHTML = `<div class="artwork"></div><strong>${escapeHtml(track.title)}</strong><span>${escapeHtml(track.artist)}</span>`;
-  card.addEventListener("click", () => openTrack(track.id));
+  card.addEventListener("click", () => openTrack(track.id, section));
   return card;
 }
 
@@ -1648,7 +1648,7 @@ function renderList(container: HTMLElement, list: Track[], emptyText: string): v
     row.addEventListener("click", (event) => {
       const target = event.target instanceof Element ? event.target : null;
       if (target?.closest("[data-row-like]")) void toggleFavorite(track.id);
-      else openTrack(track.id);
+      else openTrack(track.id, list);
     });
     return row;
   }));
@@ -2130,13 +2130,13 @@ function currentViewTracks(): Track[] {
   return [];
 }
 
-function openTrack(trackId: string): void {
+function openTrack(trackId: string, context?: Track[]): void {
   const track = trackById(trackId);
   if (track.playable === false) {
     void openDetail(track);
     return;
   }
-  playFromCurrentView(trackId);
+  playFromCurrentView(trackId, context);
 }
 
 /**
@@ -2146,8 +2146,11 @@ function openTrack(trackId: string): void {
  * playlist while another was queued played that song and then carried on through the *other*
  * playlist. A track we cannot place in a list plays alone, with nothing after it to wander into.
  */
-function playFromCurrentView(trackId: string): void {
-  const view = currentViewTracks();
+function playFromCurrentView(trackId: string, context?: Track[]): void {
+  // Prefer the list the track was actually clicked in. Home, Explore and Search have no single
+  // "current view" list -- they are a stack of independent sections -- so the section that was
+  // clicked is the only honest answer to "what did they mean to play?".
+  const view = (context ?? currentViewTracks()).filter((candidate) => candidate.playable !== false);
   const index = view.findIndex((track) => track.id === trackId);
 
   if (index === -1) {
