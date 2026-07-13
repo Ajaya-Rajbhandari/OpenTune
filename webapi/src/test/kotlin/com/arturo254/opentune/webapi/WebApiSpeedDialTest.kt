@@ -13,6 +13,7 @@ import io.ktor.server.testing.testApplication
 import java.nio.file.Files
 import java.nio.file.Path
 import kotlin.test.AfterTest
+import kotlin.test.BeforeTest
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
@@ -44,6 +45,12 @@ class WebApiSpeedDialTest {
             pinsFile = dir.resolve("speed-dial.json")
             System.setProperty("opentune.web.speeddial.file", pinsFile.toString())
         }
+    }
+
+    @BeforeTest
+    fun resetLimiter() {
+        // Shared with the other test classes in this JVM; start each test with a clean allowance.
+        resetAuthRateLimiterForTest()
     }
 
     @AfterTest

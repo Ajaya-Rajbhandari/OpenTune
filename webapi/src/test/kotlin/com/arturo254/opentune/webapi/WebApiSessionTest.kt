@@ -70,6 +70,9 @@ class WebApiSessionTest {
 
     @BeforeTest
     fun signIn() {
+        // The failed-attempt limiter is shared across test classes in this JVM; clear it so a flood
+        // test elsewhere cannot leave the localhost bucket blocked when these tests run.
+        resetAuthRateLimiterForTest()
         // A saved session on disk, exactly as a previous login would have left it.
         Files.writeString(sessionFile, """{"cookie":"$COOKIE"}""")
         YouTube.authState = PlaybackAuthState.EMPTY
