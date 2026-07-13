@@ -102,13 +102,29 @@ app remembers the token afterwards.
 
 ## Keep it running (survives reboots)
 
+> **macOS note.** launchd background agents cannot read files under `~/Desktop`, `~/Documents` or
+> `~/Downloads` (TCC protection) — a server launched from a repo in one of those folders dies with
+> "Operation not permitted". So the persistent service runs from a **staged copy** outside those
+> folders. (Running `run.sh` by hand from the repo is unaffected; this only bites launchd.)
+
+Stage the built artifacts, then install the launchd jobs:
+
+```sh
+webapi/deploy/build.sh      # build the server + web bundle
+webapi/deploy/stage.sh      # copy them to ~/opentune (override with OPENTUNE_STAGE)
+```
+
 Two launchd jobs, templates in `webapi/deploy/`:
 
-- `com.opentune.web.plist.example` — the server.
+- `com.opentune.web.plist.example` — the server, run from `~/opentune`.
 - `com.opentune.tunnel.plist.example` — the named tunnel (step 2 only).
 
 For each: replace the `REPLACE_ME` values, copy to `~/Library/LaunchAgents/` without the `.example`
 suffix, then `launchctl load -w ~/Library/LaunchAgents/<name>.plist`. Logs land in `~/Library/Logs/`.
+
+**After changing code:** re-run `build.sh` then `stage.sh` — the latter restarts the running server
+job so it picks up the new build. The repo and the staged copy are separate; the service always runs
+the staged one.
 
 ---
 
