@@ -38,6 +38,11 @@ class WebApiAuthTest {
             System.setProperty("opentune.web.token.file", tokenFile.toString())
 
             System.setProperty("opentune.web.auth.file", dir.resolve("no-session.json").toString())
+
+            // The server resolves its file paths once, on first load, and every test class shares a
+            // JVM -- so a class that leaves this unset can be the one that pins the path to the real
+            // ~/.config/opentune-web, and a later test would write the user's own pins.
+            System.setProperty("opentune.web.speeddial.file", dir.resolve("speed-dial.json").toString())
         }
     }
 

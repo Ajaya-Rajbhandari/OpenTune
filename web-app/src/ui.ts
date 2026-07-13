@@ -1,4 +1,4 @@
-import { clearAuthSession, getAccessToken, loadAuthPairingStatus, loadAuthStatus, loadBrowseData, loadDetail, loadExploreData, loadHomeData, loadLibraryItems, loadLyrics, loadNextQueue, playerMetadata, saveAuthSession, searchSongs, searchSuggestions, setRemoteLike, startAuthPairing } from "./api";
+import { clearAuthSession, getAccessToken, loadAuthPairingStatus, loadAuthStatus, loadBrowseData, loadDetail, loadExploreData, loadHomeData, loadLibraryItems, loadLyrics, loadNextQueue, loadSpeedDial, playerMetadata, saveAuthSession, saveSpeedDial, searchSongs, searchSuggestions, setRemoteLike, startAuthPairing } from "./api";
 import { demoTracks, moods } from "./demo";
 import { AudioPlayer } from "./player";
 import type { AppState, AuthStatusDto, LyricsCalibration, Route, Track } from "./types";
@@ -18,6 +18,9 @@ const lyricsIdleHideMs = 2600;
 
 /** Past this, "previous" restarts the song instead of stepping back. Media3's default on Android. */
 const previousRestartSeconds = 3;
+
+/** The cap Android puts on pinned Speed dial songs. The server enforces it too. */
+const maxSpeedDialPins = 24;
 const lyricsLeadMs = 300;
 const lyricsCalibrationMinGapMs = 20_000;
 const lyricsCalibrationMinLyricGapMs = 10_000;
@@ -65,6 +68,7 @@ const state: AppState = {
   next: { status: "idle", title: "Up next", error: "", requestId: 0 },
   explore: { status: "idle", newReleaseIds: [], moods: [], error: "" },
   library: { status: "idle", activeFilter: "", itemIdsByFilter: {}, error: "" },
+  speedDialIds: [],
   currentTrackId: "",
   queue: [],
   history: [],
@@ -77,6 +81,7 @@ const state: AppState = {
   loadingTrackId: null,
   playbackError: "",
   shuffle: false,
+  permanentShuffle: false,
   repeatMode: "off",
   playerPage: "lyrics",
   nowLyricsOpen: false,
@@ -154,6 +159,7 @@ export function bootstrap(): void {
   void refreshAuthStatus();
   void loadHome();
   void loadExplore();
+  void loadSpeedDialPins();
   if (state.query.trim()) queueRemoteSearch(state.query, 0);
   window.setInterval(tick, 1000);
 }
@@ -237,6 +243,7 @@ function saveState(): void {
     autoplayRadio: state.autoplayRadio,
     position: state.position,
     shuffle: state.shuffle,
+    permanentShuffle: state.permanentShuffle,
     repeatMode: state.repeatMode,
     playerPage: state.playerPage,
     lyricsMode: state.lyricsMode,
@@ -264,6 +271,7 @@ function loadState(): void {
     if (Array.isArray(saved.downloaded)) state.downloaded = new Set(saved.downloaded.filter((id: string) => tracks.some((track) => track.id === id)));
     if (typeof saved.position === "number") state.position = saved.position;
     state.shuffle = Boolean(saved.shuffle);
+    state.permanentShuffle = Boolean(saved.permanentShuffle);
     state.repeatMode = saved.repeatMode === "one" || saved.repeatMode === "all" ? saved.repeatMode : saved.repeat ? "all" : "off";
     if (["lyrics", "queue"].includes(saved.playerPage)) state.playerPage = saved.playerPage;
     if (["focus", "full", "compact"].includes(saved.lyricsMode)) state.lyricsMode = saved.lyricsMode;
@@ -1209,6 +1217,7 @@ function homeTracks(): Track[] {
 
 function renderHome(): void {
   renderHomeChips();
+  renderSpeedDial();
 
   if (state.homeFilter === "Liked") {
     renderLocalHomeFilter();
@@ -1218,7 +1227,7 @@ function renderHome(): void {
   if (state.home.status === "loading" && !state.home.sections.length) {
     setHomeSectionTitles("YouTube Music", "Recommendations", "More for you");
     renderMessage(qs("#quickPicks"), "Loading your YouTube Music home...");
-    qs("#speedDial").replaceChildren();
+    qs("#homeSecondary").replaceChildren();
     qs("#keepListening").replaceChildren();
     return;
   }
@@ -1226,7 +1235,7 @@ function renderHome(): void {
   if (state.home.status === "error" && !state.home.sections.length) {
     setHomeSectionTitles("YouTube Music", "Recommendations", "More for you");
     renderMessage(qs("#quickPicks"), `YouTube Music home unavailable: ${state.home.error}`);
-    qs("#speedDial").replaceChildren();
+    qs("#homeSecondary").replaceChildren();
     qs("#keepListening").replaceChildren();
     return;
   }
@@ -1268,9 +1277,9 @@ function renderHomeChips(): void {
 function renderLocalHomeFilter(): void {
   const items = homeTracks();
   const title = "Liked songs";
-  setHomeSectionTitles(title, "Speed dial", "Keep listening");
+  setHomeSectionTitles(title, "More liked songs", "Keep listening");
   renderList(qs("#quickPicks"), items, state.library.status === "loading" && state.library.activeFilter === "songs" ? "Loading liked songs..." : "No liked songs");
-  qs("#speedDial").replaceChildren(...items.filter((track) => track.playable !== false).slice(0, 6).map(speedCard));
+  qs("#homeSecondary").replaceChildren(...items.filter((track) => track.playable !== false).slice(0, 6).map(speedCard));
   qs("#keepListening").replaceChildren(...items.slice(6, 18).map(itemCard));
 }
 
@@ -1292,15 +1301,15 @@ function renderRemoteHomeSections(): void {
     state.home.sections[2]?.title || "Keep listening",
   );
   qs("#quickPicks").replaceChildren(...primaryTracks.slice(0, 8).map(quickPickRow));
-  qs("#speedDial").replaceChildren(...(secondaryTracks.length ? secondaryTracks : primaryTracks).filter((track) => track.playable !== false).slice(0, 8).map(speedCard));
+  qs("#homeSecondary").replaceChildren(...(secondaryTracks.length ? secondaryTracks : primaryTracks).filter((track) => track.playable !== false).slice(0, 8).map(speedCard));
   qs("#keepListening").replaceChildren(...keepTracks.slice(0, 16).map(itemCard));
 }
 
 function renderDemoHomeFallback(): void {
   const items = homeTracks();
-  setHomeSectionTitles("Quick picks", "Speed dial", "Keep listening");
+  setHomeSectionTitles("Quick picks", "More for you", "Keep listening");
   qs("#quickPicks").replaceChildren(...items.slice(0, 4).map(quickPickRow));
-  qs("#speedDial").replaceChildren(...items.filter((track) => track.playable !== false).slice(0, 6).map(speedCard));
+  qs("#homeSecondary").replaceChildren(...items.filter((track) => track.playable !== false).slice(0, 6).map(speedCard));
   qs("#keepListening").replaceChildren(...knownTracks().slice(2).concat(knownTracks().slice(0, 2)).slice(0, 12).map(itemCard));
 }
 
@@ -1308,20 +1317,173 @@ function sectionTracks(section: { trackIds: string[] } | undefined): Track[] {
   return section?.trackIds.map(trackById) || [];
 }
 
+/** The pinned songs, in the order they were pinned. */
+function speedDialTracks(): Track[] {
+  return state.speedDialIds.map(trackById).filter((track) => track.playable !== false);
+}
+
+/**
+ * Draws Speed dial, or hides it.
+ *
+ * Android shows the section only when something is pinned, and an empty grid of tiles explains
+ * nothing to someone who has never pinned a song -- so an unpinned Speed dial is simply not there.
+ */
+function renderSpeedDial(): void {
+  const pins = speedDialTracks();
+  const section = qs<HTMLElement>("#speedDialSection");
+  section.hidden = !pins.length;
+  if (!pins.length) {
+    qs("#speedDial").replaceChildren();
+    return;
+  }
+
+  const tiles = pins.map((track, index) => speedDialCard(track, index, pins));
+  // The dice plays the same pinned queue, just opening somewhere else in it. Worth having only once
+  // there is more than one song to choose between.
+  if (pins.length > 1) tiles.push(speedDialRandomCard(pins));
+  qs("#speedDial").replaceChildren(...tiles);
+}
+
+function speedDialCard(track: Track, index: number, pins: Track[]): HTMLElement {
+  const card = document.createElement("article");
+  const playing = track.id === state.currentTrackId;
+  card.className = `speed-card speed-dial-card${playing ? " active" : ""}`;
+  card.setAttribute("role", "button");
+  card.setAttribute("tabindex", "0");
+  card.setAttribute("aria-label", `${track.title} by ${track.artist}`);
+  setArtVars(card, track);
+  card.innerHTML = `<span class="speed-card-text"><strong>${escapeHtml(track.title)}</strong><span class="speed-card-artist">${escapeHtml(track.artist)}</span></span><button class="speed-card-unpin" type="button" data-card-unpin aria-label="Remove ${escapeHtml(track.title)} from Speed dial">${pinIconSvg()}</button>`;
+
+  const open = () => {
+    // Tapping the tile of the song already playing is a play/pause, not a restart of the queue.
+    if (playing) togglePlay();
+    else playSpeedDial(pins, index);
+  };
+  card.addEventListener("click", (event) => {
+    const target = event.target instanceof Element ? event.target : null;
+    if (target?.closest("[data-card-unpin]")) void togglePin(track);
+    else open();
+  });
+  card.addEventListener("keydown", (event) => {
+    if (event.key !== "Enter" && event.key !== " ") return;
+    const target = event.target instanceof Element ? event.target : null;
+    if (target?.closest("[data-card-unpin]")) return;
+    event.preventDefault();
+    open();
+  });
+  return card;
+}
+
+function speedDialRandomCard(pins: Track[]): HTMLElement {
+  const card = document.createElement("button");
+  card.type = "button";
+  card.className = "speed-card speed-dial-random";
+  card.innerHTML = `<span class="speed-dial-dice" aria-hidden="true">${svgIcon("M5 3h14a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2zm3 3.5a1.5 1.5 0 1 0 0 3 1.5 1.5 0 0 0 0-3zm8 0a1.5 1.5 0 1 0 0 3 1.5 1.5 0 0 0 0-3zm-4 4a1.5 1.5 0 1 0 0 3 1.5 1.5 0 0 0 0-3zm-4 4a1.5 1.5 0 1 0 0 3 1.5 1.5 0 0 0 0-3zm8 0a1.5 1.5 0 1 0 0 3 1.5 1.5 0 0 0 0-3z")}</span><strong>Random</strong>`;
+  card.setAttribute("aria-label", "Play Speed dial from a random song");
+  card.addEventListener("click", () => playSpeedDial(pins, Math.floor(Math.random() * pins.length)));
+  return card;
+}
+
+function svgIcon(path: string): string {
+  return `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="${path}" /></svg>`;
+}
+
+/**
+ * Plays the pinned songs as a list, opening at the one that was tapped.
+ *
+ * This is the one place on Home that is a real running order rather than a recommendation: the
+ * listener chose these songs and chose their order, so Android plays them as a finite ListQueue and
+ * does not seed a radio from them. Autoplay is left to carry on at the end, as it does for any list.
+ */
+function playSpeedDial(pins: Track[], startIndex: number): void {
+  if (!pins.length) return;
+  startQueue(pins, { startIndex });
+}
+
+/**
+ * Pins or unpins a song, and tells the server, which is what actually holds the list.
+ *
+ * The grid redraws before the request finishes, because a pin that waits for a round trip feels
+ * broken. If the write fails the list goes back to what the server last confirmed, so the tiles never
+ * end up claiming a pin that was not stored.
+ */
+async function togglePin(track: Track): Promise<void> {
+  const pinned = state.speedDialIds.includes(track.id);
+  const previous = state.speedDialIds;
+
+  if (!pinned && previous.length >= maxSpeedDialPins) {
+    showToast(`Speed dial holds ${maxSpeedDialPins} songs. Unpin one to make room.`);
+    return;
+  }
+
+  mergeTrack(track);
+  state.speedDialIds = pinned
+    ? previous.filter((id) => id !== track.id)
+    : [...previous, track.id];
+  render();
+
+  try {
+    state.speedDialIds = await saveSpeedDial(state.speedDialIds.map(trackById), mergeTrack);
+    showToast(pinned ? `Removed ${track.title} from Speed dial` : `Pinned ${track.title} to Speed dial`);
+  } catch (error) {
+    state.speedDialIds = previous;
+    showToast(`Could not save Speed dial: ${(error as Error).message}`);
+  }
+
+  render();
+}
+
+async function loadSpeedDialPins(): Promise<void> {
+  try {
+    state.speedDialIds = await loadSpeedDial(mergeTrack);
+    render();
+  } catch {
+    // A Speed dial that cannot be read is an empty one; it is not worth a message over the music.
+  }
+}
+
 function setHomeSectionTitles(primary: string, secondary: string, tertiary: string): void {
   setText("#quickPicksTitle", primary);
-  setText("#speedDialTitle", secondary);
+  setText("#homeSecondaryTitle", secondary);
   setText("#keepListeningTitle", tertiary);
 }
 
 function quickPickRow(track: Track, _index?: number, section?: Track[]): HTMLElement {
-  const row = document.createElement("button");
-  row.type = "button";
+  // An article rather than a button, because the pin control lives inside the row and a button
+  // cannot contain another button. The row keeps its keyboard behaviour explicitly instead.
+  const row = document.createElement("article");
   row.className = "quick-pick-row";
+  row.setAttribute("role", "button");
+  row.setAttribute("tabindex", "0");
   setArtVars(row, track);
-  row.innerHTML = `<div class="thumb"></div><div class="list-text"><strong>${escapeHtml(track.title)}</strong><span>${escapeHtml(trackSubtitle(track))}</span></div><span class="more-button" aria-hidden="true">•••</span>`;
-  row.addEventListener("click", () => openTrack(track.id, section));
+  row.innerHTML = `<div class="thumb"></div><div class="list-text"><strong>${escapeHtml(track.title)}</strong><span>${escapeHtml(trackSubtitle(track))}</span></div>${pinButtonMarkup(track)}`;
+
+  row.addEventListener("click", (event) => {
+    const target = event.target instanceof Element ? event.target : null;
+    if (target?.closest("[data-row-pin]")) void togglePin(track);
+    else openTrack(track.id, section);
+  });
+  row.addEventListener("keydown", (event) => {
+    if (event.key !== "Enter" && event.key !== " ") return;
+    // The pin button is a button: it fires its own click from the keyboard, and must not also be
+    // read as a press of the row it sits in.
+    const target = event.target instanceof Element ? event.target : null;
+    if (target?.closest("[data-row-pin]")) return;
+    event.preventDefault();
+    openTrack(track.id, section);
+  });
   return row;
+}
+
+/** The bookmark Android puts in the song menu, as a control the row can show directly. */
+function pinButtonMarkup(track: Track): string {
+  if (track.playable === false) return `<span class="more-button" aria-hidden="true"></span>`;
+  const pinned = state.speedDialIds.includes(track.id);
+  return `<button class="more-button row-pin-button${pinned ? " active" : ""}" type="button" data-row-pin aria-label="${pinned ? "Remove from Speed dial" : "Pin to Speed dial"}" aria-pressed="${pinned}">${pinIconSvg()}</button>`;
+}
+
+function pinIconSvg(): string {
+  return `<svg viewBox="0 0 24 24" aria-hidden="true"><path class="pin-fill" d="M7 3h10a1 1 0 0 1 1 1v17l-6-4.2L6 21V4a1 1 0 0 1 1-1z" /><path class="pin-outline" d="M17 3H7a1 1 0 0 0-1 1v17l6-4.2 6 4.2V4a1 1 0 0 0-1-1zm-1 2v12.2l-4-2.8-4 2.8V5h8z" /></svg>`;
 }
 
 function speedCard(track: Track, _index?: number, section?: Track[]): HTMLElement {
@@ -1565,23 +1727,44 @@ function playLibrary(shuffle = false): void {
     return;
   }
 
-  startQueue(playable, shuffle);
+  startQueue(playable, { shuffle });
 }
 
 /**
- * Starts [tracks] as the playing context.
+ * Starts [tracks] as the playing context, opening at [options.startIndex] if a song was chosen.
  *
  * The source is kept in its natural order even when starting shuffled: it is what a repeat-all wrap
  * draws from, and what turning shuffle back off restores the upcoming tracks to.
+ *
+ * A chosen song is played first and the rest follow it, shuffled or not. A Shuffle button names no
+ * song, so shuffle is what picks the one to open with.
  */
-function startQueue(tracks: Track[], shuffle: boolean): void {
-  if (shuffle) state.shuffle = true;
+function startQueue(tracks: Track[], options: { shuffle?: boolean; startIndex?: number } = {}): void {
+  if (!tracks.length) return;
+  applyShuffleForNewQueue(options.shuffle === true);
 
-  const ordered = state.shuffle ? shuffled(tracks) : tracks;
+  const chosen = options.startIndex !== undefined && tracks[options.startIndex] ? options.startIndex : -1;
+  const ordered = chosen >= 0
+    ? [tracks[chosen], ...(state.shuffle ? shuffled(tracks.filter((_, index) => index !== chosen)) : tracks.slice(chosen + 1))]
+    : state.shuffle ? shuffled(tracks) : tracks;
+
   state.queueSource = tracks.map((track) => track.id);
   state.queue = ordered.slice(1).map((track) => track.id);
   state.history = [];
   playTrack(ordered[0].id, { recordHistory: false });
+}
+
+/**
+ * Settles what shuffle means for a queue that is just starting.
+ *
+ * Android turns shuffle off every time a queue starts, unless the listener has asked for permanent
+ * shuffle (PermanentShuffleKey, off by default). The web player kept shuffle on forever instead, so
+ * shuffling one playlist quietly shuffled every album and every radio station played after it, and
+ * nothing but the toggle itself could ever put that right.
+ */
+function applyShuffleForNewQueue(shuffleRequested: boolean): void {
+  if (shuffleRequested) state.shuffle = true;
+  else if (!state.permanentShuffle) state.shuffle = false;
 }
 
 function shuffled<T>(items: T[]): T[] {
@@ -1645,12 +1828,13 @@ function renderList(container: HTMLElement, list: Track[], emptyText: string): v
     setArtVars(row, track);
     const liked = state.favorites.has(track.id);
     const action = track.playable !== false
-      ? `<button class="more-button row-like-button${liked ? " active" : ""}" type="button" data-row-like aria-label="${liked ? "Remove from liked songs" : "Add to liked songs"}" aria-pressed="${liked}">${heartIconSvg()}</button>`
+      ? `<div class="row-actions">${pinButtonMarkup(track)}<button class="more-button row-like-button${liked ? " active" : ""}" type="button" data-row-like aria-label="${liked ? "Remove from liked songs" : "Add to liked songs"}" aria-pressed="${liked}">${heartIconSvg()}</button></div>`
       : `<button class="more-button" type="button" data-row-open aria-label="Open ${escapeHtml(track.type)}">›</button>`;
     row.innerHTML = `<div class="thumb ${track.type === "Artist" ? "round" : ""}"></div><div class="list-text"><strong>${escapeHtml(track.title)}</strong><span>${escapeHtml(trackSubtitle(track))}</span></div>${action}`;
     row.addEventListener("click", (event) => {
       const target = event.target instanceof Element ? event.target : null;
       if (target?.closest("[data-row-like]")) void toggleFavorite(track.id);
+      else if (target?.closest("[data-row-pin]")) void togglePin(track);
       else openTrack(track.id, list);
     });
     return row;
@@ -1704,7 +1888,7 @@ function playDetail(shuffle = false): void {
     return;
   }
 
-  startQueue(playable, shuffle);
+  startQueue(playable, { shuffle });
 }
 
 function renderPlayer(): void {
@@ -1768,7 +1952,11 @@ function renderPlayer(): void {
   qsa<HTMLButtonElement>("#barShuffleButton, #sheetShuffleButton, #nowPageShuffleButton, #lyricsShuffleButton").forEach((button) => {
     button.classList.toggle("active", state.shuffle);
     button.setAttribute("aria-label", state.shuffle ? "Shuffle on" : "Shuffle off");
+    button.title = state.permanentShuffle
+      ? "Shuffle stays on when a new queue starts"
+      : "Shuffle turns off when a new queue starts";
   });
+  qs<HTMLInputElement>("#permanentShuffleInput").checked = state.permanentShuffle;
   qsa<HTMLButtonElement>("#barAutoplayButton, #sheetAutoplayButton, #nowPageAutoplayButton, #lyricsAutoplayButton").forEach((button) => {
     button.classList.toggle("active", state.autoplayRadio);
     button.setAttribute("aria-label", state.autoplayRadio ? "Autoplay on" : "Autoplay off");
@@ -2150,6 +2338,7 @@ function openTrack(trackId: string, context?: Track[]): void {
   // the song you tapped rather than queueing whatever happened to be rendered beside it, and so does
   // YouTube Music. Queueing the section instead made a feed behave like an eight-song playlist that
   // stops.
+  applyShuffleForNewQueue(false);
   state.queueSource = [trackId];
   state.queue = [];
   state.history = [];
@@ -2171,6 +2360,7 @@ function playFromCurrentView(trackId: string, context?: Track[]): void {
   const index = view.findIndex((track) => track.id === trackId);
 
   if (index === -1) {
+    applyShuffleForNewQueue(false);
     state.queueSource = [trackId];
     state.queue = [];
     state.history = [];
@@ -2178,11 +2368,7 @@ function playFromCurrentView(trackId: string, context?: Track[]): void {
     return;
   }
 
-  const rest = view.slice(index + 1).map((track) => track.id);
-  state.queueSource = view.map((track) => track.id);
-  state.queue = state.shuffle ? shuffled(rest) : rest;
-  state.history = [];
-  playTrack(trackId, { recordHistory: false });
+  startQueue(view, { startIndex: index });
 }
 
 /** Clicking something already in the queue jumps to it, dropping what was skipped over. */
@@ -2703,6 +2889,11 @@ function bindEvents(): void {
   ["#barShuffleButton", "#sheetShuffleButton", "#nowPageShuffleButton", "#lyricsShuffleButton"].forEach((selector) => qs(selector).addEventListener("click", toggleShuffle));
   ["#barRepeatButton", "#sheetRepeatButton", "#nowPageRepeatButton", "#lyricsRepeatButton"].forEach((selector) => qs(selector).addEventListener("click", cycleRepeatMode));
   ["#barAutoplayButton", "#sheetAutoplayButton", "#nowPageAutoplayButton", "#lyricsAutoplayButton"].forEach((selector) => qs(selector).addEventListener("click", toggleAutoplay));
+  qs<HTMLInputElement>("#permanentShuffleInput").addEventListener("change", (event) => {
+    state.permanentShuffle = (event.target as HTMLInputElement).checked;
+    showToast(state.permanentShuffle ? "Shuffle will stay on between queues" : "Shuffle turns off when a new queue starts");
+    saveState();
+  });
   qs("#barQueueButton").addEventListener("click", openQueuePanel);
   ["#sheetFavoriteButton", "#sideFavoriteButton", "#nowPageFavoriteButton"].forEach((selector) => qs(selector).addEventListener("click", () => void toggleFavorite(state.currentTrackId)));
   ["#sideArtist", "#sheetArtist", "#nowPageArtist"].forEach((selector) => {

@@ -59,6 +59,10 @@ class WebApiSessionTest {
 
             sessionFile = dir.resolve("auth-session.json")
             System.setProperty("opentune.web.auth.file", sessionFile.toString())
+
+            // See WebApiAuthTest: paths resolve once per JVM, so every test class must claim this one
+            // or the real ~/.config/opentune-web/speed-dial.json is what the suite ends up writing.
+            System.setProperty("opentune.web.speeddial.file", dir.resolve("speed-dial.json").toString())
         }
     }
 

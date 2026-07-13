@@ -42,6 +42,7 @@ import io.ktor.server.response.respondFile
 import io.ktor.server.routing.delete
 import io.ktor.server.routing.get
 import io.ktor.server.routing.post
+import io.ktor.server.routing.put
 import io.ktor.server.routing.route
 import io.ktor.server.routing.routing
 import kotlinx.coroutines.Dispatchers
@@ -81,6 +82,10 @@ private val webAuthJson = Json {
     encodeDefaults = true
 }
 private val webAuthSessionPath: Path = resolveWebAuthSessionPath()
+private val webSpeedDialPath: Path = resolveWebSpeedDialPath()
+
+/** The cap Android puts on pinned Speed dial songs. */
+private const val MAX_SPEED_DIAL_PINS = 24
 
 private const val ACCESS_TOKEN_HEADER = "X-OpenTune-Token"
 
@@ -468,6 +473,19 @@ fun Application.module() {
                 }
             }
 
+            get("/speed-dial") {
+                call.respondApi { SpeedDialResponseDto(items = readSpeedDialPins()) }
+            }
+
+            put("/speed-dial") {
+                val request = call.receive<SpeedDialResponseDto>()
+                call.respondApi {
+                    val pins = request.items.sanitizedSpeedDialPins()
+                    writeSpeedDialPins(pins)
+                    SpeedDialResponseDto(items = pins)
+                }
+            }
+
             get("/album/{browseId}") {
                 val browseId = call.parameters["browseId"]?.trim().orEmpty()
                 if (browseId.isBlank()) {
@@ -836,6 +854,55 @@ private fun persistWebAuthSession(session: AuthSessionRequestDto) {
 
 private fun deletePersistedWebAuthSession() {
     runCatching { Files.deleteIfExists(webAuthSessionPath) }
+}
+
+/**
+ * Reads the pinned Speed dial songs, in the order they were pinned.
+ *
+ * Read from disk per request instead of held in memory: the list is a few hundred bytes, and the
+ * server is reachable from every browser on the network, so a cached copy would let a phone and a
+ * laptop pin songs into two lists that quietly disagree.
+ */
+private fun readSpeedDialPins(): List<SpeedDialItemDto> = runCatching {
+    if (!Files.isRegularFile(webSpeedDialPath)) return emptyList()
+    webAuthJson.decodeFromString(
+        SpeedDialResponseDto.serializer(),
+        Files.readString(webSpeedDialPath, StandardCharsets.UTF_8),
+    ).items.sanitizedSpeedDialPins()
+}.getOrDefault(emptyList())
+
+private fun writeSpeedDialPins(pins: List<SpeedDialItemDto>) {
+    runCatching {
+        val parent = webSpeedDialPath.parent
+        if (parent != null) {
+            Files.createDirectories(parent)
+            setOwnerOnlyPermissions(parent, directory = true)
+        }
+        Files.writeString(
+            webSpeedDialPath,
+            webAuthJson.encodeToString(SpeedDialResponseDto.serializer(), SpeedDialResponseDto(pins)),
+            StandardCharsets.UTF_8,
+            StandardOpenOption.CREATE,
+            StandardOpenOption.TRUNCATE_EXISTING,
+            StandardOpenOption.WRITE,
+        )
+        setOwnerOnlyPermissions(webSpeedDialPath, directory = false)
+    }
+}
+
+/** Matches Android: a song is pinned once, and the list stops at [MAX_SPEED_DIAL_PINS]. */
+private fun List<SpeedDialItemDto>.sanitizedSpeedDialPins(): List<SpeedDialItemDto> =
+    filter { it.id.isNotBlank() && it.title.isNotBlank() }
+        .distinctBy { it.id }
+        .take(MAX_SPEED_DIAL_PINS)
+
+private fun resolveWebSpeedDialPath(): Path {
+    val explicit = System.getProperty("opentune.web.speeddial.file")
+        ?: System.getenv("OPENTUNE_WEB_SPEED_DIAL_FILE")
+    if (!explicit.isNullOrBlank()) return File(explicit).toPath()
+
+    val home = System.getProperty("user.home")?.takeIf { it.isNotBlank() } ?: "."
+    return File(home, ".config/opentune-web/speed-dial.json").toPath()
 }
 
 /**
@@ -1825,6 +1892,27 @@ private data class WebItemDto(
     val subscriberCountText: String? = null,
     val monthlyListenerCountText: String? = null,
     val year: Int? = null,
+)
+
+/**
+ * A pinned song, stored as a snapshot rather than a bare id.
+ *
+ * Android resolves its pinned ids against the songs already in its local database. The web app has
+ * no such database, and re-fetching 24 songs from YouTube to draw a grid of tiles would make Speed
+ * dial the slowest thing on the page, so a pin carries everything needed to render it.
+ */
+@Serializable
+private data class SpeedDialItemDto(
+    val id: String,
+    val title: String,
+    val artist: String = "",
+    val thumbnail: String? = null,
+    val duration: Int? = null,
+)
+
+@Serializable
+private data class SpeedDialResponseDto(
+    val items: List<SpeedDialItemDto> = emptyList(),
 )
 
 @Serializable

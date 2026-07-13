@@ -31,7 +31,8 @@ export function mountShell(root: HTMLElement): void {
           <section class="web-hero"><div><p class="overline">OpenTune web app</p><h1 id="homeTitle">Good evening</h1><p class="hero-copy">API-backed home, search, and browser playback.</p></div><button class="hero-now-card" type="button" id="heroNowCard" aria-label="Open player"><span class="hero-art" id="heroArt"></span><span><small>Playing now</small><strong id="heroTitle"></strong><em id="heroArtist"></em></span></button></section>
           <div class="chips-row" id="homeChips" aria-label="Home filters"></div>
           <section class="web-section"><div class="section-title"><h2 id="quickPicksTitle">Quick picks</h2></div><div class="quick-picks-list" id="quickPicks"></div></section>
-          <section class="web-section"><div class="section-title"><h2 id="speedDialTitle">Speed dial</h2></div><div class="speed-grid" id="speedDial"></div></section>
+          <section class="web-section" id="speedDialSection" hidden><div class="section-title"><h2>Speed dial</h2><span class="section-note">Pinned songs</span></div><div class="speed-grid" id="speedDial"></div></section>
+          <section class="web-section"><div class="section-title"><h2 id="homeSecondaryTitle">More from YouTube Music</h2></div><div class="speed-grid" id="homeSecondary"></div></section>
           <section class="web-section"><div class="section-title"><h2 id="keepListeningTitle">Keep listening</h2></div><div class="horizontal-list" id="keepListening"></div></section>
         `)}
         ${screen("search", "searchTitle", `<header class="page-heading"><p class="overline">Online</p><h1 id="searchTitle">Search</h1></header><div class="suggestions" id="suggestions"></div><div class="list-group" id="searchResults"></div>`)}
@@ -78,6 +79,11 @@ export function mountShell(root: HTMLElement): void {
           </div>
           <div class="account-actions"><button class="text-button" id="logoutAuthButton" type="button">Log out</button><button class="account-primary" id="saveAuthButton" type="submit">Save manual session</button></div>
         </form>
+        <div class="account-divider"><span>Playback</span></div>
+        <section class="account-setting-row">
+          <label for="permanentShuffleInput"><strong>Permanent shuffle mode</strong><span>Keep shuffle enabled when you start a new song.</span></label>
+          <input id="permanentShuffleInput" type="checkbox" role="switch" />
+        </section>
       </aside>
       <div class="toast-region" id="toastRegion" aria-live="polite"></div>
     </div>
