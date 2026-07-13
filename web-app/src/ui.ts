@@ -15,6 +15,9 @@ const lyricsIntroDriftMinSeconds = 4;
 
 /** How long the lyrics controls linger once the viewer stops interacting. */
 const lyricsIdleHideMs = 2600;
+
+/** Past this, "previous" restarts the song instead of stepping back. Media3's default on Android. */
+const previousRestartSeconds = 3;
 const lyricsLeadMs = 300;
 const lyricsCalibrationMinGapMs = 20_000;
 const lyricsCalibrationMinLyricGapMs = 10_000;
@@ -66,7 +69,7 @@ const state: AppState = {
   queue: [],
   history: [],
   queueSource: [],
-  autoplayRadio: false,
+  autoplayRadio: true,
   favorites: new Set(),
   downloaded: new Set(),
   isPlaying: false,
@@ -2136,7 +2139,21 @@ function openTrack(trackId: string, context?: Track[]): void {
     void openDetail(track);
     return;
   }
-  playFromCurrentView(trackId, context);
+
+  // A library or a playlist is an ordered list, and playing it means playing that order.
+  if (state.route === "library" || state.route === "detail") {
+    playFromCurrentView(trackId, context);
+    return;
+  }
+
+  // Home, Explore and Search are recommendations, not a running order. Android seeds a radio from
+  // the song you tapped rather than queueing whatever happened to be rendered beside it, and so does
+  // YouTube Music. Queueing the section instead made a feed behave like an eight-song playlist that
+  // stops.
+  state.queueSource = [trackId];
+  state.queue = [];
+  state.history = [];
+  playTrack(trackId, { recordHistory: false, seedRadio: true });
 }
 
 /**
@@ -2290,7 +2307,7 @@ function renderSheetPages(): void {
   qs(`#${state.playerPage}Page`).classList.add("active");
 }
 
-function playTrack(trackId: string, options: { recordHistory?: boolean } = {}): void {
+function playTrack(trackId: string, options: { recordHistory?: boolean; seedRadio?: boolean } = {}): void {
   const track = trackById(trackId);
   if (track.playable === false) {
     showToast(`${track.type} pages are next`);
@@ -2313,7 +2330,7 @@ function playTrack(trackId: string, options: { recordHistory?: boolean } = {}): 
   state.playbackError = "";
   render();
   if (isRemote) {
-    void loadQueueForTrack(track.id);
+    void loadQueueForTrack(track.id, options.seedRadio === true);
     void loadLyricsForTrack(track.id);
     player.play(track).catch((error: unknown) => {
       if (state.currentTrackId !== track.id) return;
@@ -2390,7 +2407,7 @@ async function ensureTrackDuration(track: Track): Promise<void> {
   if (metadata.durationSeconds) track.duration = metadata.durationSeconds;
   if (metadata.thumbnail) track.thumbnail = metadata.thumbnail;
 }
-async function loadQueueForTrack(trackId: string): Promise<void> {
+async function loadQueueForTrack(trackId: string, seedRadio = false): Promise<void> {
   const requestId = state.next.requestId + 1;
   state.next = { ...state.next, status: "loading", error: "", requestId };
   renderQueue();
@@ -2398,11 +2415,18 @@ async function loadQueueForTrack(trackId: string): Promise<void> {
   try {
     const next = await loadNextQueue(trackId, mergeTrack);
     if (state.next.requestId !== requestId || state.currentTrackId !== trackId) return;
-    // Only the Up Next heading. This used to overwrite the queue with YouTube's suggestions for the
-    // current track a moment after playback began, so a playlist quietly turned into a radio station
-    // and "next" walked out of it. Autoplay now extends the queue when it actually runs out, and
-    // only when it is switched on.
     state.next = { status: "ready", title: next.title, error: "", requestId };
+
+    // Adopted only when this track was played *as* a radio seed. Doing it for every track is what
+    // used to overwrite a chosen playlist with suggestions for whatever was playing, a moment after
+    // it began.
+    if (seedRadio) {
+      const radio = next.trackIds.filter((id) => id !== trackId).slice(0, 24);
+      if (radio.length) {
+        state.queueSource = [trackId, ...radio];
+        state.queue = state.shuffle ? shuffled(radio) : radio;
+      }
+    }
   } catch (error) {
     if (state.next.requestId !== requestId) return;
     state.next = { ...state.next, status: "error", error: error instanceof Error ? error.message : "Unable to load Up Next" };
@@ -2528,6 +2552,15 @@ function endPlayback(): void {
 }
 
 function previousTrack(): void {
+  // Pressed while a song is under way, "previous" means "start this again" -- press it twice to go
+  // back. Media3 gives Android the same behaviour through its 3s maxSeekToPreviousPosition default.
+  if (!isEmptyTrack(currentTrack()) && playbackPositionSeconds() > previousRestartSeconds) {
+    player.seek(0);
+    state.position = 0;
+    renderPlayer();
+    return;
+  }
+
   // Back to what was actually heard. This used to step backwards through the track *list* instead,
   // so after shuffle jumped from track 1 to track 4, "previous" offered track 3 -- a song that had
   // never played -- and with shuffle drawing from every loaded track it was often not even from the
