@@ -2713,3 +2713,191 @@ input[type="range"] {
   overflow: hidden;
   text-overflow: ellipsis;
 }
+
+/* --- Speed dial: the songs the listener pinned, and the controls that pin them --------------- */
+
+.section-note {
+  color: var(--muted);
+  font-size: 13px;
+  font-weight: 700;
+  padding-bottom: 3px;
+}
+
+.row-actions {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+}
+
+.list-row:has(.row-actions),
+.quick-pick-row {
+  grid-template-columns: 56px minmax(0, 1fr) auto;
+}
+
+.row-pin-button .pin-fill {
+  opacity: 0;
+  transform-origin: center;
+  transform: scale(0.72);
+  transition: opacity 140ms ease, transform 180ms cubic-bezier(0.2, 0, 0, 1);
+}
+
+.row-pin-button .pin-outline {
+  opacity: 1;
+  transition: opacity 140ms ease;
+}
+
+.row-pin-button.active .pin-outline {
+  opacity: 0;
+}
+
+.row-pin-button.active .pin-fill {
+  opacity: 1;
+  transform: scale(1);
+}
+
+.row-pin-button.active {
+  color: #fff;
+  background: color-mix(in srgb, var(--accent) 68%, #1c1c24);
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--accent) 52%, transparent);
+}
+
+/* The pin only appears on approach, so a list of songs stays a list of songs. It stays visible once
+   a song is pinned, and whenever it has focus, or it would be unreachable from the keyboard. */
+.row-pin-button:not(.active) {
+  opacity: 0;
+  transition: opacity 120ms ease;
+}
+
+.quick-pick-row:hover .row-pin-button,
+.quick-pick-row:focus-within .row-pin-button,
+.list-row:hover .row-pin-button,
+.list-row:focus-within .row-pin-button,
+.row-pin-button:focus-visible {
+  opacity: 1;
+}
+
+/* A pinned tile shows the song's own artwork, as its tile does on Android. The feed's speed cards
+   are coloured blocks because a recommendation carries no art worth the space; a song the listener
+   pinned is one they recognise on sight. */
+.speed-dial-card {
+  position: relative;
+  cursor: pointer;
+  background-image: var(--art-image, none), linear-gradient(135deg, var(--art-a), var(--art-b));
+  background-size: cover;
+  background-position: center;
+}
+
+.speed-card-text {
+  position: relative;
+  z-index: 1;
+  min-width: 0;
+}
+
+.speed-dial-card strong {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.speed-dial-card .speed-card-artist {
+  display: block;
+  margin-top: 2px;
+  color: rgba(255, 255, 255, 0.72);
+  font-size: 12px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.speed-dial-card.active {
+  box-shadow: 0 0 0 2px var(--accent);
+}
+
+.speed-card-unpin {
+  position: absolute;
+  z-index: 2;
+  top: 8px;
+  right: 8px;
+  display: grid;
+  place-items: center;
+  width: 32px;
+  height: 32px;
+  padding: 0;
+  border-radius: 50%;
+  border: none;
+  background: rgba(0, 0, 0, 0.55);
+  color: #fff;
+  opacity: 0;
+  transition: opacity 120ms ease;
+}
+
+.speed-card-unpin svg {
+  width: 17px;
+  height: 17px;
+}
+
+.speed-card-unpin .pin-outline {
+  opacity: 0;
+}
+
+.speed-dial-card:hover .speed-card-unpin,
+.speed-dial-card:focus-within .speed-card-unpin,
+.speed-card-unpin:focus-visible {
+  opacity: 1;
+}
+
+.speed-dial-random {
+  display: grid;
+  place-content: center;
+  gap: 8px;
+  justify-items: center;
+  background: rgba(255, 255, 255, 0.06);
+  border: 1px dashed rgba(255, 255, 255, 0.22);
+  color: var(--text);
+}
+
+.speed-dial-random::after {
+  content: none;
+}
+
+.speed-dial-random:hover {
+  background: rgba(255, 255, 255, 0.1);
+}
+
+.speed-dial-dice svg {
+  width: 30px;
+  height: 30px;
+  fill: currentColor;
+}
+
+.account-setting-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 4px 0 8px;
+}
+
+.account-setting-row label {
+  display: grid;
+  gap: 2px;
+}
+
+.account-setting-row strong {
+  color: var(--text);
+  font-size: 15px;
+}
+
+.account-setting-row span {
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.account-setting-row input[type="checkbox"] {
+  flex: none;
+  width: 46px;
+  height: 26px;
+  accent-color: var(--accent);
+  cursor: pointer;
+}

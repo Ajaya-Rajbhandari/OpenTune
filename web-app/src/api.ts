@@ -15,6 +15,8 @@ import type {
   PlayerResponseDto,
   SearchResultsDto,
   SearchSuggestionsDto,
+  SpeedDialItemDto,
+  SpeedDialResponseDto,
   Track,
   WebItemDto,
 } from "./types";
@@ -210,6 +212,66 @@ export async function loadLibraryItems(filter: string, mergeTrack: (track: Track
   return (library.items || [])
     .filter((item) => item.id && item.title)
     .map(apiItemToTrack)
+    .map((track) => mergeTrack(track).id);
+}
+
+/**
+ * A pin carries its own title, artist and artwork, so it renders on a cold start.
+ *
+ * Android resolves pinned ids against the songs already in its database. The web app has no database
+ * to resolve against -- a song is only known once some page has loaded it -- so a pin that stored an
+ * id alone would show up as an empty tile until the listener happened to browse past that song again.
+ */
+function speedDialItemToTrack(item: SpeedDialItemDto): Track {
+  return {
+    id: item.id,
+    title: item.title,
+    artist: item.artist || "YouTube Music",
+    album: "Song",
+    duration: item.duration || 0,
+    mood: "Online",
+    type: "Song",
+    thumbnail: item.thumbnail,
+    explicit: false,
+    source: "youtube",
+    playable: true,
+    lyrics: [],
+    ...colorSetFromId(item.id || item.title || "opentune"),
+  };
+}
+
+function trackToSpeedDialItem(track: Track): SpeedDialItemDto {
+  return {
+    id: track.id,
+    title: track.title,
+    artist: track.artist,
+    thumbnail: track.thumbnail,
+    duration: track.duration || undefined,
+  };
+}
+
+export async function loadSpeedDial(mergeTrack: (track: Track) => Track): Promise<string[]> {
+  const speedDial = await apiGet<SpeedDialResponseDto>("/api/speed-dial");
+  return (speedDial.items || [])
+    .filter((item) => item.id && item.title)
+    .map(speedDialItemToTrack)
+    .map((track) => mergeTrack(track).id);
+}
+
+/**
+ * Writes the whole pin list, which is also how a song is unpinned.
+ *
+ * The server answers with the list it actually stored -- deduplicated and capped, as Android caps it
+ * -- so the caller adopts that rather than assuming the write landed exactly as sent.
+ */
+export async function saveSpeedDial(pins: Track[], mergeTrack: (track: Track) => Track): Promise<string[]> {
+  const saved = await apiSend<SpeedDialResponseDto>("/api/speed-dial", {
+    method: "PUT",
+    body: JSON.stringify({ items: pins.map(trackToSpeedDialItem) }),
+  });
+  return (saved.items || [])
+    .filter((item) => item.id && item.title)
+    .map(speedDialItemToTrack)
     .map((track) => mergeTrack(track).id);
 }
 

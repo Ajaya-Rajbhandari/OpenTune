@@ -150,6 +150,13 @@ export interface AppState {
     itemIdsByFilter: Record<string, string[]>;
     error: string;
   };
+  /**
+   * Songs pinned to Speed dial, in the order they were pinned.
+   *
+   * They live on the server rather than in this browser: it is the one arrangement the listener makes
+   * by hand, and it should be the same list whether they open OpenTune on the laptop or the phone.
+   */
+  speedDialIds: string[];
   currentTrackId: string;
   /** Upcoming tracks, in the order they will play. Already shuffled when shuffle is on. */
   queue: string[];
@@ -171,6 +178,13 @@ export interface AppState {
   loadingTrackId: string | null;
   playbackError: string;
   shuffle: boolean;
+  /**
+   * Whether shuffle survives the start of a new queue.
+   *
+   * Android turns shuffle off every time a queue starts unless this is set (PermanentShuffleKey), so
+   * shuffling one playlist does not silently shuffle everything played after it.
+   */
+  permanentShuffle: boolean;
   repeatMode: "off" | "all" | "one";
   playerPage: "lyrics" | "queue";
   nowLyricsOpen: boolean;
@@ -228,6 +242,19 @@ export interface HomeResponseDto {
 export interface ExploreResponseDto {
   newReleaseAlbums: WebItemDto[];
   moods: ExploreMoodDto[];
+}
+
+/** A pinned song, stored whole so a Speed dial tile can be drawn without asking YouTube for it. */
+export interface SpeedDialItemDto {
+  id: string;
+  title: string;
+  artist?: string;
+  thumbnail?: string;
+  duration?: number;
+}
+
+export interface SpeedDialResponseDto {
+  items: SpeedDialItemDto[];
 }
 
 export interface BrowseResponseDto {
