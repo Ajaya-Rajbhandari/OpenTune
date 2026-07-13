@@ -92,6 +92,15 @@ class WebApiAuthTest {
         assertNotEquals(HttpStatusCode.Unauthorized, client.get("/").status)
     }
 
+    @Test
+    fun `the audio proxy is behind the token`() = withServer {
+        // The stream proxy fetches YouTube audio using the signed-in session and relays it. Left
+        // open, anyone on the network could pull audio through the account; the <audio> element
+        // passes the token as a query param, so both ways in must be gated.
+        assertEquals(HttpStatusCode.Unauthorized, client.get("/api/stream/dQw4w9WgXcQ?itag=140").status)
+        assertEquals(HttpStatusCode.Unauthorized, client.get("/api/stream/dQw4w9WgXcQ?itag=140&token=wrong").status)
+    }
+
     // --- pairing ------------------------------------------------------------------------------
 
     @Test

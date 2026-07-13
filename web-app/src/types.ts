@@ -304,6 +304,7 @@ export interface LyricsResponseDto {
 }
 
 export interface PlayerFormatDto {
+  itag: number;
   mimeType: string;
   url?: string;
 }

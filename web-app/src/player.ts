@@ -1,4 +1,4 @@
-import { playerMetadata } from "./api";
+import { playerMetadata, streamUrl } from "./api";
 import type { PlayerFormatDto, Track } from "./types";
 
 interface StreamSource {
@@ -155,10 +155,12 @@ export class AudioPlayer {
 
     // Keep every candidate, best first, rather than betting the track on one guess. If the browser
     // then fails to decode the format it claimed to support, there is something left to fall back to.
+    // Each URL points at the server's stream proxy, not googlevideo: the raw URL is signed to the
+    // server's IP and would 403 from the browser anywhere but the same network.
     const urls = player.formats
       .filter((format) => format.url && this.formatRank(format) >= 0)
       .sort((a, b) => this.formatRank(b) - this.formatRank(a))
-      .map((format) => format.url as string);
+      .map((format) => streamUrl(track.id, format.itag));
 
     if (!urls.length) throw new Error("No browser-playable stream URL returned");
 
