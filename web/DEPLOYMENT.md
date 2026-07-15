@@ -122,6 +122,12 @@ Two launchd jobs, templates in `webapi/deploy/`:
 For each: replace the `REPLACE_ME` values, copy to `~/Library/LaunchAgents/` without the `.example`
 suffix, then `launchctl load -w ~/Library/LaunchAgents/<name>.plist`. Logs land in `~/Library/Logs/`.
 
+> **Set `OPENTUNE_YTDLP_PATH` to the absolute path of `yt-dlp`** (`which yt-dlp`, e.g.
+> `/opt/homebrew/bin/yt-dlp`) in the server plist. launchd runs with a minimal `PATH` that does **not**
+> include Homebrew, so a bare `yt-dlp` is never found — and the stream-resolution fallback silently
+> stops running. Without it, any track YouTube's InnerTube clients can't resolve directly (which
+> happens intermittently, more so without PO tokens) simply won't play. With it, `yt-dlp` rescues them.
+
 **After changing code:** re-run `build.sh` then `stage.sh` — the latter restarts the running server
 job so it picks up the new build. The repo and the staged copy are separate; the service always runs
 the staged one.

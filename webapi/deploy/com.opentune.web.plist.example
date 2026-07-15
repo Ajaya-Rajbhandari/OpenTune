@@ -36,6 +36,11 @@
         <!-- The staged web bundle, so the server does not reach back into the repo. -->
         <key>OPENTUNE_WEB_ROOT</key>
         <string>REPLACE_ME_HOME/opentune/web-dist</string>
+        <!-- Absolute path to yt-dlp. REQUIRED under launchd: its PATH is minimal (no /opt/homebrew/bin),
+             so a bare "yt-dlp" is not found and the stream-resolution fallback silently never runs --
+             which leaves any track InnerTube cannot resolve unplayable. Find yours with `which yt-dlp`. -->
+        <key>OPENTUNE_YTDLP_PATH</key>
+        <string>REPLACE_ME_YTDLP_PATH</string>
     </dict>
 
     <key>WorkingDirectory</key>
