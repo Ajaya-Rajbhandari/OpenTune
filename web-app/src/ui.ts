@@ -818,13 +818,21 @@ function renderAccount(): void {
     setText("#accountStatusText", [account?.email || account?.channelHandle, authError || "Login is active for browse and playback requests."].filter(Boolean).join(" / "));
   } else {
     setText("#accountStatusTitle", authError ? "Login failed" : "Not logged in");
-    setText("#accountStatusText", authError || "Paste the same YouTube Music auth values saved by the Android app.");
+    const notLoggedInHint = isHelperCapableOrigin()
+      ? "Paste the same YouTube Music auth values saved by the Android app."
+      : "Sign in on the machine running the server, or pair from the Android app below.";
+    setText("#accountStatusText", authError || notLoggedInHint);
   }
 
   ["#authCookieInput", "#authVisitorInput", "#authDataSyncInput", "#authPoTokenInput", "#saveAuthButton", "#logoutAuthButton"].forEach((selector) => {
     qs<HTMLInputElement | HTMLTextAreaElement | HTMLButtonElement>(selector).disabled = state.accountSaving;
   });
   qs<HTMLButtonElement>("#logoutAuthButton").disabled = state.accountSaving || !state.auth.loggedIn;
+  // The browser helper is a dead end on a public address: hide its card there and show honest
+  // guidance instead, so nobody clicks a login button that can never succeed.
+  const helperCapable = isHelperCapableOrigin();
+  qs<HTMLElement>("#extensionLoginCard").hidden = !helperCapable;
+  qs<HTMLElement>("#serverLoginCard").hidden = helperCapable;
   qs<HTMLButtonElement>("#extensionLoginButton").disabled = state.extensionLoginPending || state.accountSaving;
   qs<HTMLButtonElement>("#installExtensionButton").hidden = !browserHelperInstallUrl;
   qs<HTMLButtonElement>("#installExtensionButton").disabled = state.accountSaving;
@@ -852,6 +860,24 @@ function isLoopbackOrigin(): boolean {
   return window.location.hostname === "localhost" || window.location.hostname === "127.0.0.1";
 }
 
+/**
+ * Whether the browser helper could sign in from this address at all.
+ *
+ * The helper refuses to send a Google login anywhere but a machine you control -- loopback or a
+ * private LAN address -- because the cookie is full account access. On a public address (a deployed
+ * OpenTune behind a domain) it will not run, and no toolbar grant changes that, so offering its login
+ * button there is a dead end. This mirrors the extension's own isPrivateHostname check.
+ */
+function isHelperCapableOrigin(): boolean {
+  const host = window.location.hostname;
+  if (host === "localhost" || host === "127.0.0.1" || host === "::1") return true;
+  if (host.endsWith(".local")) return true;
+  if (/^10\.\d{1,3}\.\d{1,3}\.\d{1,3}$/.test(host)) return true;
+  if (/^192\.168\.\d{1,3}\.\d{1,3}$/.test(host)) return true;
+  if (/^172\.(1[6-9]|2\d|3[01])\.\d{1,3}\.\d{1,3}$/.test(host)) return true;
+  return false;
+}
+
 function androidPairingDeepLink(): string {
   const params = new URLSearchParams({
     server: window.location.origin,
@@ -866,9 +892,12 @@ function extensionLoginButtonText(): string {
   return state.auth.loggedIn ? "Refresh YouTube Music login" : "Login with YouTube Music";
 }
 
-// The helper only auto-injects on loopback. On a LAN origin it is installed but idle until
-// the user grants this origin from the toolbar icon, so "install it" would be wrong advice.
+// The helper auto-injects on loopback, works on a LAN origin once granted from the toolbar, and
+// cannot run on a public address at all -- so each case needs different advice.
 function helperUnreachableMessage(): string {
+  if (!isHelperCapableOrigin()) {
+    return "The browser helper can't sign in over a public address. Log in on the machine running the server (open OpenTune there at its localhost address), or use Pair with OpenTune Android above.";
+  }
   if (!isLoopbackOrigin()) {
     return "If the helper is already installed, click its toolbar icon to allow it on this address, then retry login.";
   }
