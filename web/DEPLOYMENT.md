@@ -162,6 +162,50 @@ variable and restart instead.)
 
 ---
 
+## Troubleshooting: the server got logged out
+
+Every so often the site will show **"Not logged in"** and the account panel loses your YouTube
+account. This is normal: Google invalidates the login cookie periodically (every few weeks, sometimes
+sooner). When the server next calls YouTube and gets a real 401, it deletes the dead session rather
+than pretend it still works — you'll see `Signed out: YouTube rejected the session ...` in
+`~/Library/Logs/opentune-web.log`, and `auth-session.json` disappears. Browse and playback still work
+anonymously for many tracks, but your library and recommendations are gone until you sign in again.
+
+**Signing back in — do it on the server machine, not the public URL.** The browser helper refuses to
+send a Google login to a public address (the cookie is full account access), so the public site
+cannot capture a login. The login must happen on the Mac:
+
+1. In Chrome on the Mac, with the OpenTune Login Helper extension loaded
+   (`chrome://extensions` → Developer mode → Load unpacked → `web-extension/`).
+2. Open the **local** address with the token:
+   ```
+   http://127.0.0.1:8080/?token=YOUR_TOKEN
+   ```
+   (Your token is in `~/.config/opentune-web/access-token`.)
+3. Account panel → **Login with YouTube Music** → sign into the shared account. The helper captures
+   the session and posts it to the server.
+
+Because `127.0.0.1:8080` is the **same server** behind the public domain, this one login restores the
+site for everyone. Confirm with:
+
+```sh
+curl -s -H "X-OpenTune-Token: YOUR_TOKEN" https://music.yourdomain.com/api/auth/status
+```
+
+`"loggedIn": true` and your account name means it stuck.
+
+**Alternative — pair from Android.** If you run the *fork's* Android app (the official release does
+**not** have "Pair with OpenTune Web"), and it is signed in: on the web click **Generate code**, then
+on Android go to **Settings → Pair with OpenTune Web**, enter the server URL exactly as
+`https://music.yourdomain.com` (with `https://` — Android defaults to `http://`, which the tunnel does
+not serve), and the code. Android pushes its login to the server.
+
+> **Why this recurs.** The web app shares one YouTube account, and that account's cookie has a finite
+> life. Each expiry needs one re-login on the Mac. The Android-app-per-person route avoids it entirely
+> — each phone keeps its own login alive — which is what the account panel points people to.
+
+---
+
 ## Security notes
 
 - The server binds every interface so the tunnel and LAN devices can reach it. The token is the gate;
