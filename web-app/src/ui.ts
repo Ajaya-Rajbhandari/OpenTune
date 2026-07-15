@@ -2849,8 +2849,81 @@ function updateMediaSession(track: Track): void {
   navigator.mediaSession.setActionHandler("nexttrack", nextTrack);
 }
 
+/**
+ * Lets the horizontal rows (category chips, album rails) be scrolled with a mouse.
+ *
+ * These rows overflow sideways, but their scrollbars are hidden and a mouse wheel only scrolls
+ * vertically -- so on a desktop the off-screen cards were simply unreachable. This maps a vertical
+ * wheel onto horizontal scrolling and lets the row be dragged, the way a finger would swipe it.
+ *
+ * The containers are static; only their children are replaced on render, so wiring them once at
+ * startup is enough.
+ */
+function enableHorizontalScrolling(): void {
+  qsa<HTMLElement>(".chips-row, .speed-grid, .horizontal-list").forEach((strip) => {
+    const overflows = () => strip.scrollWidth > strip.clientWidth + 1;
+
+    strip.addEventListener("wheel", (event) => {
+      if (!overflows()) return;
+      // A trackpad sends real horizontal deltas; leave those to scroll natively. Only remap a
+      // vertical wheel, which is all a plain mouse produces.
+      if (Math.abs(event.deltaX) > Math.abs(event.deltaY)) return;
+      // At either edge, let the wheel fall through to the page so vertical scrolling is not trapped
+      // just because the pointer happens to be over a row.
+      const atStart = strip.scrollLeft <= 0;
+      const atEnd = strip.scrollLeft + strip.clientWidth >= strip.scrollWidth - 1;
+      if ((event.deltaY < 0 && atStart) || (event.deltaY > 0 && atEnd)) return;
+      strip.scrollLeft += event.deltaY;
+      event.preventDefault();
+    }, { passive: false });
+
+    let startX = 0;
+    let startScroll = 0;
+    let pointerId = -1;
+    let moved = false;
+
+    strip.addEventListener("pointerdown", (event) => {
+      if (event.button !== 0 || event.pointerType === "touch" || !overflows()) return;
+      pointerId = event.pointerId;
+      startX = event.clientX;
+      startScroll = strip.scrollLeft;
+      moved = false;
+    });
+
+    strip.addEventListener("pointermove", (event) => {
+      if (pointerId !== event.pointerId) return;
+      const dx = event.clientX - startX;
+      if (!moved && Math.abs(dx) <= 4) return;
+      // Past the threshold this is a drag, not a click: capture the pointer and pan.
+      moved = true;
+      strip.setPointerCapture(pointerId);
+      strip.classList.add("dragging");
+      strip.scrollLeft = startScroll - dx;
+    });
+
+    const endDrag = () => {
+      if (pointerId < 0) return;
+      if (strip.hasPointerCapture(pointerId)) strip.releasePointerCapture(pointerId);
+      strip.classList.remove("dragging");
+      pointerId = -1;
+    };
+    strip.addEventListener("pointerup", endDrag);
+    strip.addEventListener("pointercancel", endDrag);
+
+    // A drag ends in a click on whatever card it started over; swallow that click so panning does not
+    // also open a track. Capture phase, to beat the card's own handler.
+    strip.addEventListener("click", (event) => {
+      if (!moved) return;
+      event.stopPropagation();
+      event.preventDefault();
+      moved = false;
+    }, true);
+  });
+}
+
 function bindEvents(): void {
   ensureLyricsOffsetControls();
+  enableHorizontalScrolling();
   qs("#historyBackButton").addEventListener("click", () => navigateHistory("back"));
   qs("#historyForwardButton").addEventListener("click", () => navigateHistory("forward"));
   qs("#accountChip").addEventListener("click", openAccountSheet);

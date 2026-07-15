@@ -807,6 +807,16 @@ h1 {
   scroll-snap-type: x proximity;
 }
 
+/* While a row is being dragged with the mouse, show the grabbing cursor and stop the drag from
+   selecting the card text underneath it. */
+.chips-row.dragging,
+.speed-grid.dragging,
+.horizontal-list.dragging {
+  cursor: grabbing;
+  user-select: none;
+  scroll-snap-type: none;
+}
+
 .speed-grid {
   grid-auto-columns: 170px;
 }
