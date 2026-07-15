@@ -2156,6 +2156,12 @@ input[type="range"] {
   line-height: 1.45;
 }
 
+/* The `hidden` attribute must win over the grid display below, or toggling it off leaves the card
+   visible -- a class selector's display outranks [hidden]'s user-agent rule. */
+.account-extension-card[hidden] {
+  display: none;
+}
+
 .account-extension-card,
 .account-pairing-card,
 .account-own-account-card {
@@ -2192,6 +2198,27 @@ input[type="range"] {
 .account-own-account-card {
   border-color: var(--line);
   background: rgba(255, 255, 255, 0.04);
+}
+
+/* Shown on a public address in place of the browser-helper card, which cannot work there. Pure
+   guidance, no button -- so it is a single column, not the two-column button layout. */
+.account-server-login-card {
+  padding: 16px;
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  background: rgba(255, 255, 255, 0.04);
+}
+
+.account-server-login-card strong {
+  display: block;
+  color: var(--text);
+  margin-bottom: 5px;
+}
+
+.account-server-login-card span {
+  color: var(--muted);
+  font-size: 13px;
+  line-height: 1.4;
 }
 
 .account-own-account-card .account-primary {
