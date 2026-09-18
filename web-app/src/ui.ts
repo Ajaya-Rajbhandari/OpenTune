@@ -37,6 +37,10 @@ let extensionAuthMissingTimer = 0;
 let androidPairingPollTimer = 0;
 const extensionFolderPath = "web-extension/";
 const browserHelperInstallUrl = import.meta.env.VITE_OPENTUNE_HELPER_INSTALL_URL?.trim() || "";
+// Where to get an OpenTune Android build. Deliberately unset by default: the old hard-coded link
+// pointed at an upstream releases page that now returns 451, and that build predates the pairing
+// screen this server talks to, so it could never have paired anyway. Point it at your own release.
+const androidAppUrl = import.meta.env.VITE_OPENTUNE_ANDROID_APP_URL?.trim() || "";
 const suppressedFavoriteIds = new Set<string>();
 const sidebarLibraryLoading = new Set<string>();
 const routeBackStack: Route[] = [];
@@ -833,6 +837,8 @@ function renderAccount(): void {
   const helperCapable = isHelperCapableOrigin();
   qs<HTMLElement>("#extensionLoginCard").hidden = !helperCapable;
   qs<HTMLElement>("#serverLoginCard").hidden = helperCapable;
+  if (!helperCapable) renderSignInUrls();
+  renderAndroidAppLink();
   qs<HTMLButtonElement>("#extensionLoginButton").disabled = state.extensionLoginPending || state.accountSaving;
   qs<HTMLButtonElement>("#installExtensionButton").hidden = !browserHelperInstallUrl;
   qs<HTMLButtonElement>("#installExtensionButton").disabled = state.accountSaving;
@@ -843,6 +849,77 @@ function renderAccount(): void {
   setText("#extensionLoginButton", extensionLoginButtonText());
   setText("#extensionLoginText", extensionLoginText());
   setText("#extensionInstallFallback", `Developer build: set VITE_OPENTUNE_HELPER_INSTALL_URL to the store URL, or load ${extensionFolderPath} manually.`);
+}
+
+/**
+ * Lists the addresses where a login can actually be completed.
+ *
+ * Without this the public-address card was a dead end: it said to use "its localhost address"
+ * without naming one, and left out that the URL needs the access token, so there was nothing to act
+ * on. The LAN address leads because the helper works there too -- it only refuses public origins --
+ * so a phone or laptop on the same wi-fi can sign in without walking to the server.
+ */
+function renderSignInUrls(): void {
+  const list = qs<HTMLUListElement>("#serverLoginUrls");
+  const urls = state.auth.signInUrls ?? [];
+  list.replaceChildren();
+  list.hidden = urls.length === 0;
+  if (!urls.length) return;
+
+  const isLoopback = (url: string) => /^https?:\/\/(127\.0\.0\.1|localhost|\[::1\])[:\/]/.test(url);
+  // LAN first: it reaches more devices than loopback, which needs you at the machine itself.
+  const ordered = [...urls.filter((url) => !isLoopback(url)), ...urls.filter(isLoopback)];
+
+  ordered.forEach((url) => {
+    const row = document.createElement("li");
+
+    const text = document.createElement("div");
+    const code = document.createElement("code");
+    // The token is a live credential. Show enough to recognise the address, copy the whole thing.
+    code.textContent = maskTokenInUrl(url);
+    const hint = document.createElement("span");
+    hint.textContent = isLoopback(url)
+      ? "On the computer running the server"
+      : "From any device on your home wi-fi";
+    text.append(code, hint);
+
+    const copy = document.createElement("button");
+    copy.type = "button";
+    copy.className = "text-button";
+    copy.textContent = "Copy link";
+    copy.addEventListener("click", () => void copySignInUrl(url));
+
+    row.append(text, copy);
+    list.append(row);
+  });
+}
+
+/** Replaces all but the first few token characters, so the panel is safe to have on screen. */
+function maskTokenInUrl(url: string): string {
+  return url.replace(/([?&]token=)([^&]+)/, (_match, prefix: string, token: string) =>
+    `${prefix}${token.slice(0, 6)}${"\u2026"}`);
+}
+
+async function copySignInUrl(url: string): Promise<void> {
+  try {
+    await navigator.clipboard.writeText(url);
+    showToast("Sign-in link copied");
+  } catch {
+    showToast("Could not copy the sign-in link");
+  }
+}
+
+/** Hides the "get the app" button unless a build URL is configured -- see [androidAppUrl]. */
+function renderAndroidAppLink(): void {
+  const link = qs<HTMLAnchorElement>("#androidAppLink");
+  link.hidden = !androidAppUrl;
+  if (androidAppUrl) link.href = androidAppUrl;
+  setText(
+    "#androidAppText",
+    androidAppUrl
+      ? "This web player signs in as one shared YouTube account \u2014 whoever set up the server. For your own library and recommendations, install the OpenTune Android app and sign in there on your own phone."
+      : "This web player signs in as one shared YouTube account \u2014 whoever set up the server. Your own library and recommendations need the OpenTune Android app, which you build from this repository; there is no public download.",
+  );
 }
 
 function androidPairingText(): string {

@@ -76,6 +76,8 @@ export interface AuthStatusDto {
   useLoginForBrowse: boolean;
   account?: AuthAccountDto;
   error?: string;
+  /** Loopback and LAN URLs where the browser helper is allowed to capture a login. */
+  signInUrls?: string[];
 }
 
 export interface AuthSessionRequestDto {
