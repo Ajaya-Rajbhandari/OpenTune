@@ -706,7 +706,22 @@ private suspend fun ApplicationCall.respondApi(block: suspend () -> Any) {
     }
 }
 
+/**
+ * An endpoint having nothing to return, as opposed to failing to answer.
+ *
+ * A track with no lyrics anywhere is a normal outcome, not a bad gateway, but it used to throw a
+ * plain [IllegalStateException] and land in the catch-all below -- so every unlyricked song reported
+ * itself to the browser as a 502 and showed up in the console as a server fault.
+ */
+private class NoResultException(message: String) : Exception(message)
+
 private suspend fun ApplicationCall.respondApiError(error: Throwable) {
+    // Expected emptiness is not a failure: answer 404 without the log noise or a stack trace.
+    if (error is NoResultException) {
+        respond(HttpStatusCode.NotFound, ApiError(error.message?.takeIf { it.isNotBlank() } ?: "Not found"))
+        return
+    }
+
     // Falling back to the exception class name leaked internals to the client
     // ("NullPointerException" as user-facing copy). Keep deliberate messages thrown by our
     // own code, log everything, and give the client generic copy for anything unexpected.
@@ -1444,7 +1459,7 @@ private suspend fun resolveLyrics(
         return lyrics.toLyricsResponse(source = "youtube", synced = false)
     }
 
-    error("Lyrics unavailable")
+    throw NoResultException("Lyrics unavailable")
 }
 
 private fun String.toLyricsResponse(
@@ -1688,26 +1703,56 @@ private suspend fun resolvePlayer(videoId: String): ResolvedPlayer {
  * seeking still works and the audio element gets the Content-Range and length it needs.
  */
 private suspend fun proxyStream(call: ApplicationCall, videoId: String, itag: Int?) {
+    // A signed URL is only discovered to be stale by fetching it, so the first refusal is not an
+    // answer yet -- it is the cue to re-sign. This used to drop the cached resolution and then hand
+    // the browser a 502 anyway, so the listener's play died and only their *next* press got the
+    // fresh URL this one had already paid for. Spend the retry here instead.
+    for (attempt in 0..1) {
+        val upstreamUrl = resolveStreamUrl(call, videoId, itag) ?: return
+        if (relayStream(call, upstreamUrl) == StreamRelay.DONE) return
+
+        // Bound to this server's address and a live session, and both move out from under a cached
+        // resolution: drop it so the next pass signs afresh.
+        invalidateCachePrefix("player:$videoId")
+    }
+
+    respondStreamError(call, HttpStatusCode.BadGateway, "Upstream refused the signed stream URL", null)
+}
+
+/** What [relayStream] did: answered the call, or hit a refusal that re-signing might fix. */
+private enum class StreamRelay { DONE, STALE_SIGNATURE }
+
+/**
+ * Picks the URL to relay for [videoId], responding with the reason and returning null when there is
+ * none to relay.
+ */
+private suspend fun resolveStreamUrl(call: ApplicationCall, videoId: String, itag: Int?): String? {
     val player = runCatching { cachedPlayerResponse(videoId) }.getOrElse { error ->
         respondStreamError(call, HttpStatusCode.BadGateway, "Could not resolve stream", error)
-        return
+        return null
     }
 
     if (player.playabilityStatus != "OK") {
         respondStreamError(call, HttpStatusCode.NotFound, player.playabilityReason ?: "Playback unavailable", null)
-        return
+        return null
     }
 
     // Honour the exact format the browser chose -- it ranked them for what it can actually decode --
     // and fall back to the best available only when no itag was named or the named one is gone.
     val format = itag?.let { wanted -> player.formats.firstOrNull { it.itag == wanted && it.url != null } }
         ?: player.formats.firstOrNull { it.url != null }
+
     val upstreamUrl = format?.url
     if (upstreamUrl == null) {
         respondStreamError(call, HttpStatusCode.NotFound, "No playable stream for this track", null)
-        return
+        return null
     }
 
+    return upstreamUrl
+}
+
+/** Relays [upstreamUrl] to the caller, forwarding Range both ways so seeking keeps working. */
+private suspend fun relayStream(call: ApplicationCall, upstreamUrl: String): StreamRelay =
     withContext(Dispatchers.IO) {
         val connection = (URL(upstreamUrl).openConnection() as HttpURLConnection).apply {
             requestMethod = "GET"
@@ -1724,16 +1769,21 @@ private suspend fun proxyStream(call: ApplicationCall, videoId: String, itag: In
         } catch (error: Throwable) {
             connection.disconnect()
             respondStreamError(call, HttpStatusCode.BadGateway, "Upstream stream unreachable", error)
-            return@withContext
+            return@withContext StreamRelay.DONE
+        }
+
+        // The URL being refused, rather than the track being unavailable. Nothing is written to the
+        // response here, which is what leaves the caller free to re-sign and relay for real.
+        if (status == 401 || status == 403) {
+            connection.disconnect()
+            System.err.println("[opentune-web-api] stream proxy: upstream returned $status, re-signing")
+            return@withContext StreamRelay.STALE_SIGNATURE
         }
 
         if (status !in 200..299) {
             connection.disconnect()
-            // A 403 here is the signed URL being refused -- usually a session that expired out from
-            // under the cached resolution. Drop the cache so the next play resolves afresh.
-            if (status == 403 || status == 401) invalidateCachePrefix("player:$videoId")
             respondStreamError(call, HttpStatusCode.BadGateway, "Upstream returned $status", null)
-            return@withContext
+            return@withContext StreamRelay.DONE
         }
 
         connection.contentType?.let { call.response.header(HttpHeaders.ContentType, it) }
@@ -1752,8 +1802,9 @@ private suspend fun proxyStream(call: ApplicationCall, videoId: String, itag: In
         } finally {
             connection.disconnect()
         }
+
+        StreamRelay.DONE
     }
-}
 
 private suspend fun respondStreamError(call: ApplicationCall, status: HttpStatusCode, message: String, error: Throwable?) {
     System.err.println("[opentune-web-api] stream proxy: $message${error?.let { ": ${it.message}" } ?: ""}")
