@@ -1157,17 +1157,25 @@ internal fun resetAuthRateLimiterForTest() = authRateLimiter.clear()
  * the one that matters: it is what a phone can actually reach for pairing.
  */
 private fun announceAccessUrl() {
+    println("[opentune-web-api] Open OpenTune Web with one of:")
+    localSignInUrls().forEach { println("[opentune-web-api]   $it") }
+    println("[opentune-web-api] Token stored at $webAccessTokenPath")
+}
+
+/**
+ * The URLs that open OpenTune Web on this machine or its LAN, token already attached.
+ *
+ * The browser helper that captures a Google login refuses to run anywhere but loopback or a private
+ * address, so on a public deployment these are the only places a login can actually be completed.
+ * Printing them once at startup is no help to someone signed out on their phone months later, which
+ * is why the auth status hands the same list to the client.
+ */
+private fun localSignInUrls(): List<String> {
     val port = System.getenv("PORT")?.toIntOrNull() ?: 8080
-    val hosts = buildList {
+    return buildList {
         add("127.0.0.1")
         addAll(localNetworkAddresses())
-    }
-
-    println("[opentune-web-api] Open OpenTune Web with one of:")
-    hosts.forEach { host ->
-        println("[opentune-web-api]   http://$host:$port/?token=$webAccessToken")
-    }
-    println("[opentune-web-api] Token stored at $webAccessTokenPath")
+    }.map { host -> "http://$host:$port/?token=$webAccessToken" }
 }
 
 private fun localNetworkAddresses(): List<String> =
@@ -1247,6 +1255,7 @@ private suspend fun webAuthStatus(refreshAccount: Boolean = false): AuthStatusDt
         useLoginForBrowse = YouTube.useLoginForBrowse,
         account = cachedWebAccount.takeIf { loggedIn },
         error = accountError,
+        signInUrls = localSignInUrls(),
     )
 }
 
@@ -2083,6 +2092,8 @@ private data class AuthStatusDto(
     val useLoginForBrowse: Boolean,
     val account: WebAccountDto? = null,
     val error: String? = null,
+    /** Where a login can actually be completed -- see [localSignInUrls]. */
+    val signInUrls: List<String> = emptyList(),
 )
 
 private data class PairingSession(

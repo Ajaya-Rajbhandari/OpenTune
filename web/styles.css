@@ -2231,6 +2231,47 @@ input[type="range"] {
   line-height: 1.4;
 }
 
+.account-signin-urls {
+  list-style: none;
+  margin: 12px 0 0;
+  padding: 0;
+  display: grid;
+  gap: 8px;
+}
+
+.account-signin-urls li {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 10px 12px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: rgba(0, 0, 0, 0.18);
+}
+
+/* min-width:0 so a long URL wraps inside the row instead of pushing the copy button off the card. */
+.account-signin-urls li > div {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+}
+
+.account-signin-urls code {
+  font-size: 12px;
+  color: var(--text);
+  overflow-wrap: anywhere;
+}
+
+.account-signin-urls span {
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.account-signin-urls .text-button {
+  flex: none;
+}
+
 .account-own-account-card .account-primary {
   white-space: nowrap;
 }
